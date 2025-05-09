@@ -1,6 +1,12 @@
 import uuid
+import logging
+import unittest
 
 from services import ServiceCollection
+
+# configure root logger once
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger(__name__)
 
 
 class SampleService:
@@ -31,79 +37,9 @@ class DatabaseService(SampleService):
         self.connection_string = config.connection_string
 
 
-service_collection = ServiceCollection()
-
-# Singleton
-service_collection.add_singleton(Configuration)
-service_collection.add_singleton(SingletonRepository)
-service_collection.add_transient(TransientRepository)
-service_collection.add_scoped(ScopedRepository)
-
-
-# Fix: Use provider instead of service_collection in the factory function
 def configure_database_service(provider):
     config = provider.resolve(Configuration)
     return DatabaseService(config)
-
-
-service_collection.add_singleton(DatabaseService, factory=configure_database_service)
-
-print("Service collection configured.")
-print("Building service provider...")
-provider = service_collection.build_provider()
-print("Service provider built.")
-
-
-print('Resolving singleton services')
-singleton_one = provider.resolve(SingletonRepository)
-singleton_two = provider.resolve(SingletonRepository)
-print(f"Singleton One ID: {singleton_one.id}")
-print(f"Singleton Two ID: {singleton_two.id}")
-
-
-assert singleton_one.id == singleton_two.id, "Singleton instances should be the same."
-
-
-print('Resolving transient services')
-transient_one = provider.resolve(TransientRepository)
-transient_two = provider.resolve(TransientRepository)
-
-print(f"Transient One ID: {transient_one.id}")
-print(f"Transient Two ID: {transient_two.id}")
-
-assert transient_one.id != transient_two.id, "Transient instances should be different."
-
-# Scoped
-print('Resolving scoped services')
-with provider.create_scope() as scope_provider_one:
-    print("Inside first scope")
-    scoped_one = scope_provider_one.resolve(ScopedRepository)
-    scoped_two = scope_provider_one.resolve(ScopedRepository)
-
-    print(f"Scoped One ID: {scoped_one.id}")
-    print(f"Scoped Two ID: {scoped_two.id}")
-    assert scoped_one.id == scoped_two.id, "Scoped instances should be the same within the same scope."
-print("Outside first scope")
-
-# Simulate a new scope
-print("Creating second scope")
-with provider.create_scope() as scope_provider_two:
-    print("Inside second scope")
-    scoped_three = scope_provider_two.resolve(ScopedRepository)
-    print(f"Scoped Three ID: {scoped_three.id}")
-    print(f"Scoped One ID (from first scope): {scoped_one.id}")
-    assert scoped_one.id != scoped_three.id, "Scoped instances should be different across different scopes."
-
-
-# Test singleton factory
-print("Testing singleton factory")
-singleton_factory_one = provider.resolve(DatabaseService)
-singleton_factory_two = provider.resolve(DatabaseService)
-print(f"Singleton Factory One ID: {singleton_factory_one.id}")
-print(f"Singleton Factory Two ID: {singleton_factory_two.id}")
-assert singleton_factory_one.id == singleton_factory_two.id, "Singleton factory instances should be the same."
-
-# Now add and test scoped and transient factories
 
 
 def configure_scoped_database_service(provider):
@@ -116,60 +52,110 @@ def configure_transient_database_service(provider):
     return DatabaseService(config)
 
 
-# Add scoped and transient versions for testing
-service_collection.add_scoped(DatabaseService, factory=configure_scoped_database_service)
-service_collection.add_scoped(DatabaseService, factory=configure_transient_database_service)
+class TestDependencyInjection(unittest.TestCase):
+    def setUp(self):
+        # common setup for most tests
+        self.collection = ServiceCollection()
+        self.collection.add_singleton(Configuration)
+        self.collection.add_singleton(SingletonRepository)
+        self.collection.add_transient(TransientRepository)
+        self.collection.add_scoped(ScopedRepository)
+        self.collection.add_singleton(DatabaseService, factory=configure_database_service)
+        self.provider = self.collection.build_provider()
+        logger.info("Built ServiceProvider for test %s", self._testMethodName)
+
+    def test_singleton_behavior(self):
+        logger.info("Testing singleton resolution")
+        one = self.provider.resolve(SingletonRepository)
+        two = self.provider.resolve(SingletonRepository)
+        logger.info("IDs: %s, %s", one.id, two.id)
+        self.assertEqual(one.id, two.id, "Singleton instances should match")
+
+    def test_transient_behavior(self):
+        logger.info("Testing transient resolution")
+        one = self.provider.resolve(TransientRepository)
+        two = self.provider.resolve(TransientRepository)
+        logger.info("IDs: %s, %s", one.id, two.id)
+        self.assertNotEqual(one.id, two.id, "Transient instances should differ")
+
+    def test_scoped_behavior(self):
+        logger.info("Testing scoped resolution per-scope")
+        with self.provider.create_scope() as scope1:
+            a = scope1.resolve(ScopedRepository)
+            b = scope1.resolve(ScopedRepository)
+            logger.info("Scope1 IDs: %s, %s", a.id, b.id)
+            self.assertEqual(a.id, b.id, "Scoped within same scope should match")
+        with self.provider.create_scope() as scope2:
+            c = scope2.resolve(ScopedRepository)
+            logger.info("Scope2 ID: %s", c.id)
+            self.assertNotEqual(a.id, c.id, "Scoped across scopes should differ")
+
+    def test_singleton_factory(self):
+        logger.info("Testing singleton factory for DatabaseService")
+        one = self.provider.resolve(DatabaseService)
+        two = self.provider.resolve(DatabaseService)
+        logger.info("Factory singleton IDs: %s, %s", one.id, two.id)
+        self.assertEqual(one.id, two.id, "Factory singleton should match")
+
+    def test_scoped_factory(self):
+        logger.info("Adding scoped factory registration for DatabaseService")
+        self.collection.add_scoped(DatabaseService, factory=configure_scoped_database_service)
+        provider2 = self.collection.build_provider()
+        with provider2.create_scope() as scope1:
+            a = scope1.resolve(DatabaseService)
+            b = scope1.resolve(DatabaseService)
+            logger.info("Scoped-factory Scope1 IDs: %s, %s", a.id, b.id)
+            self.assertEqual(a.id, b.id)
+        with provider2.create_scope() as scope2:
+            c = scope2.resolve(DatabaseService)
+            logger.info("Scoped-factory Scope2 ID: %s", c.id)
+            self.assertNotEqual(a.id, c.id)
+
+    def test_transient_factory(self):
+        logger.info("Creating fresh collection for transient factory test")
+        coll = ServiceCollection()
+        coll.add_singleton(Configuration)
+        coll.add_transient(SampleService, factory=configure_transient_database_service)
+        provider3 = coll.build_provider()
+        one = provider3.resolve(SampleService)
+        two = provider3.resolve(SampleService)
+        logger.info("Transient-factory IDs: %s, %s", one.id, two.id)
+        self.assertNotEqual(one.id, two.id)
+
+    def test_complex_service_singleton(self):
+        logger.info("Testing ComplexService with singleton lifetimes")
+
+        class ComplexService:
+            def __init__(self, config: Configuration, db: DatabaseService):
+                self.id = uuid.uuid4()
+
+        coll = ServiceCollection()
+        coll.add_singleton(Configuration)
+        coll.add_singleton(DatabaseService, factory=configure_database_service)
+        coll.add_singleton(ComplexService)
+        prov = coll.build_provider()
+        first = prov.resolve(ComplexService)
+        second = prov.resolve(ComplexService)
+        logger.info("ComplexService IDs: %s, %s", first.id, second.id)
+        self.assertEqual(first.id, second.id)
+
+    def test_complex_service_transient(self):
+        logger.info("Testing ComplexService with transient lifetimes")
+
+        class ComplexService:
+            def __init__(self, config: Configuration, db: DatabaseService):
+                self.id = uuid.uuid4()
+
+        coll = ServiceCollection()
+        coll.add_singleton(Configuration)
+        coll.add_singleton(DatabaseService, factory=configure_database_service)
+        coll.add_transient(ComplexService)
+        prov = coll.build_provider()
+        first = prov.resolve(ComplexService)
+        second = prov.resolve(ComplexService)
+        logger.info("ComplexService (transient) IDs: %s, %s", first.id, second.id)
+        self.assertNotEqual(first.id, second.id)
 
 
-scoped_one_id = ''
-# Test scoped factory
-print("Testing scoped factory")
-with provider.create_scope() as scope:
-    scoped_factory_one = scope.resolve(DatabaseService)
-    scoped_factory_two = scope.resolve(DatabaseService)
-    print(f"Scoped Factory One ID: {scoped_factory_one.id}")
-    print(f"Scoped Factory Two ID: {scoped_factory_two.id}")
-    assert scoped_factory_one.id == scoped_factory_two.id, "Scoped factory instances should be the same within a scope."
-    scoped_one_id = scoped_factory_one.id
-
-with provider.create_scope() as scope:
-    scoped_factory_three = scope.resolve(DatabaseService)
-    print(f"Scoped Factory Three ID: {scoped_factory_three.id}")
-    assert scoped_factory_three.id != scoped_one_id, "Scoped factory instances should be different across different scopes."
-
-# Transient factories
-print("Testing transient factory")
-
-collection = ServiceCollection()
-
-
-def test_configure_transient_factory(provider):
-    config = provider.resolve(Configuration)
-    print('Resolved configuration in transient factory')
-    assert isinstance(config, Configuration), "Configuration should be resolved correctly."
-    return SampleService()
-
-
-collection.add_singleton(Configuration)
-collection.add_transient(SampleService, factory=test_configure_transient_factory)
-
-provider = collection.build_provider()
-print("Transient factory provider built.")
-
-transient_one = provider.resolve(SampleService)
-transient_two = provider.resolve(SampleService)
-
-print(f"Transient Factory One ID: {transient_one.id}")
-print(f"Transient Factory Two ID: {transient_two.id}")
-assert transient_one.id != transient_two.id, "Transient factory instances should be different."
-
-print("All tests passed.")
-
-with provider.create_scope() as scope:
-    transient_factory_one = scope.resolve(SampleService)
-    transient_factory_two = scope.resolve(SampleService)
-    print(f"Transient Factory One ID: {transient_factory_one.id}")
-    print(f"Transient Factory Two ID: {transient_factory_two.id}")
-    assert transient_factory_one.id != transient_factory_two.id, "Transient factory instances should be different within a scope."
-
-print("All tests passed.")
+if __name__ == "__main__":
+    unittest.main()
