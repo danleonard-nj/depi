@@ -2,10 +2,15 @@ import uuid
 import logging
 import unittest
 
-from services import ServiceCollection
+from depi.services import ServiceCollection
+from framework.di.exceptions import RegistrationNotFoundError, InvalidDependencyChainError
 
 # configure root logger once
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+tlogging = logging.getLogger()
+tlogging.setLevel(logging.INFO)
+formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+for handler in logging.root.handlers:
+    handler.setFormatter(formatter)
 logger = logging.getLogger(__name__)
 
 
@@ -69,14 +74,14 @@ class TestDependencyInjection(unittest.TestCase):
         one = self.provider.resolve(SingletonRepository)
         two = self.provider.resolve(SingletonRepository)
         logger.info("IDs: %s, %s", one.id, two.id)
-        self.assertEqual(one.id, two.id, "Singleton instances should match")
+        self.assertEqual(one.id, two.id)
 
     def test_transient_behavior(self):
         logger.info("Testing transient resolution")
         one = self.provider.resolve(TransientRepository)
         two = self.provider.resolve(TransientRepository)
         logger.info("IDs: %s, %s", one.id, two.id)
-        self.assertNotEqual(one.id, two.id, "Transient instances should differ")
+        self.assertNotEqual(one.id, two.id)
 
     def test_scoped_behavior(self):
         logger.info("Testing scoped resolution per-scope")
@@ -84,18 +89,18 @@ class TestDependencyInjection(unittest.TestCase):
             a = scope1.resolve(ScopedRepository)
             b = scope1.resolve(ScopedRepository)
             logger.info("Scope1 IDs: %s, %s", a.id, b.id)
-            self.assertEqual(a.id, b.id, "Scoped within same scope should match")
+            self.assertEqual(a.id, b.id)
         with self.provider.create_scope() as scope2:
             c = scope2.resolve(ScopedRepository)
             logger.info("Scope2 ID: %s", c.id)
-            self.assertNotEqual(a.id, c.id, "Scoped across scopes should differ")
+            self.assertNotEqual(a.id, c.id)
 
     def test_singleton_factory(self):
         logger.info("Testing singleton factory for DatabaseService")
         one = self.provider.resolve(DatabaseService)
         two = self.provider.resolve(DatabaseService)
         logger.info("Factory singleton IDs: %s, %s", one.id, two.id)
-        self.assertEqual(one.id, two.id, "Factory singleton should match")
+        self.assertEqual(one.id, two.id)
 
     def test_scoped_factory(self):
         logger.info("Adding scoped factory registration for DatabaseService")
@@ -155,6 +160,90 @@ class TestDependencyInjection(unittest.TestCase):
         second = prov.resolve(ComplexService)
         logger.info("ComplexService (transient) IDs: %s, %s", first.id, second.id)
         self.assertNotEqual(first.id, second.id)
+
+    # --- new edge-case tests ---
+    def test_missing_registration_raises(self):
+        logger.info("Testing missing registration")
+        coll = ServiceCollection()
+        prov = coll.build_provider()
+        with self.assertRaises(RegistrationNotFoundError):
+            prov.resolve(SampleService)
+
+    def test_circular_dependency_detected(self):
+        logger.info("Testing circular dependency detection")
+
+        class A:
+            def __init__(self, b: 'B'):
+                pass
+
+        class B:
+            def __init__(self, a: A):
+                pass
+
+        coll = ServiceCollection()
+        coll.add_transient(A)
+        coll.add_transient(B)
+        with self.assertRaises(InvalidDependencyChainError):
+            coll.build_provider()
+
+    def test_singleton_across_scopes(self):
+        logger.info("Testing singleton across scopes")
+        with self.provider.create_scope() as s1:
+            one = s1.resolve(SingletonRepository)
+        with self.provider.create_scope() as s2:
+            two = s2.resolve(SingletonRepository)
+        self.assertEqual(one.id, two.id)
+
+    def test_transient_across_scopes(self):
+        logger.info("Testing transient across scopes")
+        with self.provider.create_scope() as s1:
+            one = s1.resolve(TransientRepository)
+        with self.provider.create_scope() as s2:
+            two = s2.resolve(TransientRepository)
+        self.assertNotEqual(one.id, two.id)
+
+    def test_deep_dependency_chain(self):
+        logger.info("Testing deep dependency chain")
+
+        class A:
+            def __init__(self):
+                self.id = uuid.uuid4()
+
+        class B:
+            def __init__(self, a: A):
+                self.a = a
+
+        class C:
+            def __init__(self, b: B):
+                self.b = b
+
+        class D:
+            def __init__(self, c: C):
+                self.c = c
+
+        class E:
+            def __init__(self, d: D):
+                self.d = d
+
+        coll = ServiceCollection()
+        for cls in (A, B, C, D, E):
+            coll.add_transient(cls)
+        prov = coll.build_provider()
+        e = prov.resolve(E)
+        self.assertIsInstance(e.d.c.b.a, A)
+
+    def test_factory_exception_propagates(self):
+        logger.info("Testing factory exception propagation")
+
+        def bad_factory(provider):
+            raise RuntimeError("factory failure")
+
+        coll = ServiceCollection()
+        coll.add_transient(Configuration)
+        coll.add_transient(SampleService, factory=bad_factory)
+        prov = coll.build_provider()
+        with self.assertRaises(RuntimeError):
+            prov.resolve(SampleService)
 
 
 if __name__ == "__main__":
