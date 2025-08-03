@@ -177,3 +177,4 @@ edges.py
 configuration.py
 web.py
 exceptions.py
+.vscode/settings.json

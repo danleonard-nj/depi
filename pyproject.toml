@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "depi"
+version = "0.1.0"
+description = ".NET-inspired dependency injection package for Python"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Dan Leonard", email = "your-email@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+keywords = ["dependency-injection", "di", "ioc", "inversion-of-control", "container"]
+requires-python = ">=3.8"
+dependencies = []
+
+[project.optional-dependencies]
+web = ["flask"]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+]
+
+[project.urls]
+Homepage = "https://github.com/danleonard-nj/depi"
+Repository = "https://github.com/danleonard-nj/depi"
+Issues = "https://github.com/danleonard-nj/depi/issues"
+
+[tool.setuptools.packages.find]
+include = ["depi*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

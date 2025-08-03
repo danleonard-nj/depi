@@ -1,11 +1,11 @@
-from framework.logger import get_logger
+import logging
 from threading import Lock
 from functools import wraps
 from typing import Any, Callable, Optional, Type
 import asyncio
 import inspect
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class Lifetime:
@@ -214,6 +214,10 @@ class ServiceCollection:
         )
         self._container[dependency_type] = dependency
 
+    def get_container(self) -> dict:
+        """Get the internal dependency container"""
+        return self._container
+
     def build_provider(self) -> 'ServiceProvider':
         provider = ServiceProvider(self)
         provider.build()
@@ -338,7 +342,8 @@ class ServiceProvider:
             order.append(dep)
 
         for dep in dependencies:
-            dfs(dep)
+            if dep not in visited:
+                dfs(dep)
         return order
 
     def build(self) -> 'ServiceProvider':
@@ -350,7 +355,17 @@ class ServiceProvider:
             if reg.factory:
                 instance = reg.factory(self)
                 if asyncio.iscoroutine(instance):
-                    instance = asyncio.get_event_loop().run_until_complete(instance)
+                    # Create new event loop if needed for async factories
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # If we're already in an event loop, we need to handle this differently
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as executor:
+                            future = executor.submit(asyncio.run, instance)
+                            instance = future.result()
+                    except RuntimeError:
+                        # No event loop running, we can use run_until_complete
+                        instance = asyncio.run(instance)
             else:
                 instance = reg.activate(self._dependency_lookup, self._cache, self._cache_lock)
             reg.instance = instance
