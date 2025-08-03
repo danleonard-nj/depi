@@ -100,7 +100,7 @@ class DependencyRegistration:
             reg = dependency_lookup.get(param.dependency_type)
             if reg is None:
                 raise Exception(
-                    f"Missing dependency for '{param.dependency_type.__name__}' "
+                    f"Failed to locate registration for '{param.dependency_type.__name__}' "
                     f"when activating '{self._type_name}'"
                 )
             constructor_args[param.name] = reg.activate(dependency_lookup, cache, cache_lock)
@@ -132,7 +132,7 @@ class DependencyRegistration:
             reg = dependency_lookup.get(param.dependency_type)
             if reg is None:
                 raise Exception(
-                    f"Missing dependency for '{param.dependency_type.__name__}' "
+                    f"Failed to locate registration for '{param.dependency_type.__name__}' "
                     f"when activating '{self._type_name}'"
                 )
             constructor_args[param.name] = await reg.activate_async(dependency_lookup, cache, cache_lock)
@@ -389,7 +389,7 @@ class ServiceProvider:
             )
 
         if reg.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a ServiceScope. Call provider.create_scope().")
+            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
 
         raise Exception(f"Unknown lifetime: {reg.lifetime}")
 
@@ -427,7 +427,7 @@ class ServiceProvider:
             return await inst if asyncio.iscoroutine(inst) else inst
 
         if reg.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a ServiceScope. Call provider.create_scope().")
+            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
 
         raise Exception(f"Unknown lifetime: {reg.lifetime}")
 
@@ -444,10 +444,10 @@ class ServiceProvider:
             return reg
         if requesting_type:
             raise Exception(
-                f"Missing registration for '{implementation_type.__name__}' "
+                f"Failed to locate registration for '{implementation_type.__name__}' "
                 f"while instantiating '{requesting_type._type_name}'"
             )
-        raise Exception(f"Missing registration for '{implementation_type.__name__}'")
+        raise Exception(f"Failed to locate registration for '{implementation_type.__name__}'")
 
     def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
         """
@@ -643,7 +643,7 @@ class DependencyInjector:
                 except Exception as e:
                     if self._strict:
                         raise Exception(
-                            f"Failed to resolve '{param.annotation.__name__}' "
+                            f"Failed to resolve dependency '{param.annotation.__name__}' "
                             f"for '{name}': {e}"
                         )
                     logger.debug(f"Skipping DI for '{name}': {e}")
