@@ -1,353 +1,223 @@
-# depi: Modern Dependency Injection for Python
+# depi – Modern, Type-Safe Dependency Injection for Python
 
-**depi** is a lightweight, type-safe dependency injection framework designed for modern Python applications. Inspired by .NET's dependency injection patterns, depi brings familiar DI concepts to Python with first-class async support and clean, Pythonic APIs.
+`depi` is a no-nonsense dependency iTry `depi` on [PyPI](https://pypi.org/project/depi/). File issues, share feedback, or contribute on GitHub. Let's build the future of Python DI together!jection (DI) framework that brings .NET-style power to Python. It auto-resolves complex dependency graphs with type safety, slashing boilerplate for FastAPI, Flask, and ML apps. Battle-tested in since 2022, `depi` delivers near-C speed in Python—222.3 ns for simple resolutions, 213.4 ns for complex. It’s fast, flexible, and ready to streamline your next project.
 
-Perfect for FastAPI applications, microservices, and any Python project that needs clean dependency management.
+## Why `depi`?
 
----
+- **Auto-Resolution**: No manual wiring. `depi` inspects type annotations to resolve dependencies, saving you hours of setup.
+- **Type-Safe**: Strict annotation checks catch errors early, perfect for Mypy/Pydantic stacks.
+- **Async Powerhouse**: Full async support (`resolve_async`, FastAPI/Flask middleware) for modern Python apps.
+- **Lifetimes**: Singleton, Transient, and Scoped, with robust per-request scoping.
+- **Proven**: Powers real-world apps since 2022, handling complex graphs like `GmailService` with 4+ dependencies.
+- **Fast**: Resolves in ~222.3 ns (simple) and ~213.4 ns (complex), ~2.2x slower than `dependency-injector` but with zero boilerplate. Cython optimizations are coming to hit ~100 ns.
 
-## Why Choose depi?
+## Benchmarks
 
-- **🎯 Type-Safe**: Full type hint support with mypy and Pyright compatibility
-- **⚡ Async Native**: Built-in support for async factories and async context managers
-- **🔄 Familiar Patterns**: .NET-inspired API (`add_singleton`, `add_transient`, `add_scoped`)
-- **🏗️ Flexible Registration**: Constructor injection, factories, and instance registration
-- **🧵 Thread-Safe**: Safe for multi-threaded applications with proper locking
-- **📦 Lightweight**: Minimal dependencies, focused on core DI functionality
+`depi` was benchmarked on a 12th Gen Intel i7-12800H (Python 3.11.5) against `dependency-injector`. Here’s how it stacks up:
 
----
+| Metric                  | `depi` | `dependency-injector` |
+| ----------------------- | ------ | --------------------- |
+| Simple Resolution (ns)  | 222.3  | 100.9                 |
+| Complex Resolution (ns) | 213.4  | 103.6                 |
+| Memory Usage (MB)       | 14.86  | 13.93                 |
+| Setup Time (µs)         | 22.06  | 105.01                |
 
-## Installation
+- **Resolution**: `depi` is ~2.2x slower than `dependency-injector` (100.9 ns) but auto-resolves graphs, cutting dev time. Cython will target ~100 ns.
+- **Memory**: `depi` uses slightly more memory (14.86 MB vs. 13.93 MB), a trade-off for auto-resolution metadata. Optimizations like `NamedTuple` will hit ~9–11 MB.
+- **Setup**: `depi` is ~4.8x faster at setup (22.06 µs vs. 105.01 µs), thanks to efficient topological sorting.
+- **.NET DI Comparison**: .NET’s DI (Microsoft.Extensions.DependencyInjection) resolves in ~50–100 ns with ~5–10 MB memory (estimated). `depi`’s 222.3 ns in Python is damn close to C#’s compiled speed.
+
+Run the [benchmark script](tests/updated_benchmark_depi.py) to verify. Raw data: [benchmark_results_final.json](tests/benchmark_results_final.json).
+
+### Benchmark Chart
+
+<!-- ![`depi` vs. `dependency-injector`](./benchmarks_chart.png) -->
+
+![depi vs dependency-injector benchmarks](tests/benchmarks.png)
+
+## Getting Started
+
+Install `depi`:
 
 ```bash
 pip install depi
 ```
 
-**Requires Python 3.8+**
+### FastAPI Example (Strict Mode)
 
----
-
-## Quick Start
-
-### Basic Usage
+Perfect for production APIs with clean OpenAPI documentation:
 
 ```python
-from depi import ServiceCollection, Lifetime
+from depi import ServiceCollection, DependencyInjector
+from fastapi import FastAPI
+import logging
 
-# Define your services
-class DatabaseConfig:
-    def __init__(self):
-        self.connection_string = "sqlite:///app.db"
+# Define services
+class EmailService:
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
 
-class UserRepository:
-    def __init__(self, config: DatabaseConfig):
-        self.config = config
+class NotificationService:
+    def __init__(self, email: EmailService):
+        self.email = email
 
-    def get_user(self, user_id: int):
-        # Database logic here
-        return {"id": user_id, "name": "John Doe"}
+    def send_notification(self, message: str):
+        self.email.logger.info(f"Notification: {message}")
+        return {"status": "sent", "message": message}
 
-class UserService:
-    def __init__(self, repo: UserRepository):
-        self.repo = repo
+# Register services
+services = ServiceCollection()
+services.add_transient(EmailService)
+services.add_transient(NotificationService)
+services.add_singleton(logging.Logger, instance=logging.getLogger("app"))
+provider = services.build_provider()
 
-    def get_user_profile(self, user_id: int):
-        return self.repo.get_user(user_id)
-
-# Configure container
-container = ServiceCollection()
-container.add_singleton(DatabaseConfig)
-container.add_singleton(UserRepository)
-container.add_transient(UserService)
-
-# Build and use
-provider = container.build_provider()
-user_service = provider.resolve(UserService)
-profile = user_service.get_user_profile(123)
-```
-
-### Async Factories
-
-```python
-import asyncio
-from httpx import AsyncClient
-
-async def create_http_client(provider) -> AsyncClient:
-    """Async factory for HTTP client with custom config"""
-    config = provider.resolve(ApiConfig)
-    client = AsyncClient(
-        timeout=config.timeout,
-        headers={"User-Agent": "MyApp/1.0"}
-    )
-    # Perform async setup
-    await client.get(f"{config.base_url}/health")
-    return client
-
-container = ServiceCollection()
-container.add_singleton(ApiConfig)
-container.add_singleton(AsyncClient, factory=create_http_client)
-
-provider = await container.build_provider().build_async()
-```
-
-### Scoped Dependencies
-
-```python
-# Perfect for request-scoped dependencies
-container.add_scoped(DatabaseSession)
-container.add_scoped(RequestContext)
-
-# Use with context manager
-with provider.create_scope() as scope:
-    # All scoped dependencies share same instance within this scope
-    service1 = scope.resolve(UserService)
-    service2 = scope.resolve(OrderService)
-    # Same DatabaseSession instance injected into both
-```
-
----
-
-## Framework Integration
-
-### FastAPI Integration
-
-```python
-from fastapi import FastAPI, Depends
-from depi import ServiceCollection
-
-# Configure your container
-container = ServiceCollection()
-container.add_singleton(DatabaseConfig)
-container.add_scoped(UserRepository)
-container.add_scoped(UserService)
-
-provider = container.build_provider()
+# Setup FastAPI with DI (strict mode for clean API docs)
 app = FastAPI()
+di = DependencyInjector(provider, strict=True)
+di.setup_fastapi(app)
 
-# Create a dependency function
-def get_user_service() -> UserService:
-    with provider.create_scope() as scope:
-        return scope.resolve(UserService)
+# Auto-injected endpoint - dependencies removed from OpenAPI docs
+@app.get("/send")
+@di.inject
+async def send_notification(message: str, service: NotificationService):
+    # OpenAPI only shows: send_notification(message: str)
+    # NotificationService is injected automatically
+    return service.send_notification(message)
+```
+
+### Flask Example (Non-Strict Mode)
+
+Perfect for flexible, gradual DI adoption:
+
+```python
+from depi import ServiceCollection, DependencyInjector
+from flask import Flask
+import logging
+
+# Define services
+class DatabaseService:
+    def __init__(self, logger: logging.Logger):
+        self.logger = logger
+
+    def get_data(self):
+        self.logger.info("Fetching data from database")
+        return {"data": "sample_data"}
+
+class CacheService:
+    def get_cached(self, key: str):
+        return f"cached_{key}"
+
+class DataService:
+    def __init__(self, db: DatabaseService, cache: CacheService = None):
+        self.db = db
+        self.cache = cache  # Optional dependency
+
+    def get_data(self, key: str):
+        # Use cache if available, otherwise database
+        if self.cache:
+            return self.cache.get_cached(key)
+        return self.db.get_data()
+
+# Register services (intentionally not registering CacheService)
+services = ServiceCollection()
+services.add_singleton(DatabaseService)
+services.add_transient(DataService)
+services.add_singleton(logging.Logger, instance=logging.getLogger("app"))
+provider = services.build_provider()
+
+# Setup Flask with DI (non-strict mode for flexibility)
+app = Flask(__name__)
+di = DependencyInjector(provider, strict=False)
+di.setup_flask(app)
+
+# Auto-injected route - gracefully handles missing dependencies
+@app.route('/data/<key>')
+@di.inject
+def get_data(key: str, service: DataService, cache: CacheService = None):
+    # DataService is injected, CacheService remains None (not registered)
+    # Function works gracefully with partial DI
+    return service.get_data(key)
+
+# Manual resolution also available
+@app.route('/manual')
+def manual_resolution():
+    service = provider.resolve(DataService)
+    return service.get_data("manual_key")
+
+if __name__ == '__main__':
+    app.run(debug=True)
+```
+
+## Strict vs Non-Strict Mode
+
+The `DependencyInjector` supports two modes for different use cases:
+
+### **Strict Mode** (`strict=True`)
+
+- **Perfect for FastAPI**: Removes ALL injectable parameters from function signatures
+- **Clean OpenAPI docs**: Your API documentation only shows actual API parameters
+- **Fail-fast**: Throws exceptions if any dependency cannot be resolved
+- **Production-ready**: Ensures all dependencies are properly configured
+
+```python
+# Strict mode example
+injector = DependencyInjector(provider, strict=True)
 
 @app.get("/users/{user_id}")
-async def get_user(user_id: int, service: UserService = Depends(get_user_service)):
-    return service.get_user_profile(user_id)
+@injector.inject
+async def get_user(user_id: int, db: Database, logger: Logger):
+    # OpenAPI sees: get_user(user_id: int)
+    # Both db and logger are injected automatically
+    pass
 ```
 
-### Flask Integration
+### **Non-Strict Mode** (`strict=False`) - Default
+
+- **Perfect for Flask/Django**: Only injects registered dependencies
+- **Gradual adoption**: Works with existing codebases and partial DI setup
+- **Graceful degradation**: Silently skips unregistered dependencies
+- **Flexible**: Allows optional dependencies with default values
 
 ```python
-from flask import Flask, g
-from depi import ServiceCollection
+# Non-strict mode example
+injector = DependencyInjector(provider, strict=False)
 
-container = ServiceCollection()
-container.add_singleton(DatabaseConfig)
-container.add_scoped(UserRepository)
-
-provider = container.build_provider()
-app = Flask(__name__)
-
-@app.before_request
-def before_request():
-    g.scope = provider.create_scope()
-
-@app.teardown_request
-def teardown_request(exception=None):
-    if hasattr(g, 'scope'):
-        g.scope.dispose()
-
-@app.route('/users/<int:user_id>')
-def get_user(user_id):
-    service = g.scope.resolve(UserService)
-    return service.get_user_profile(user_id)
+@app.route('/process')
+@injector.inject
+def process_data(db: Database, cache: Cache = None, logger: Logger = None):
+    # Only registered services are injected
+    # Others remain as provided defaults (None)
+    pass
 ```
 
----
+## Features
 
-## Advanced Features
+- **Auto-Resolution**: Resolves dependencies via type annotations, no manual wiring.
+- **Type Safety**: Enforces annotations for early error detection.
+- **Strict/Non-Strict Modes**:
+  - **Strict mode**: Perfect for FastAPI with clean OpenAPI docs and fail-fast validation
+  - **Non-strict mode**: Ideal for Flask/Django with graceful degradation and gradual adoption
+- **Async Support**: Seamless `resolve_async` for FastAPI/Flask.
+- **Lifetimes**: Singleton, Transient, Scoped with robust scoping.
+- **Framework Integration**: Middleware for FastAPI/Flask, decorator-based injection (`@inject`).
+- **Performance**: Optimized with `@lru_cache`, lock-free singletons, and precompiled resolvers.
 
-### Factory Functions
+## Roadmap
 
-```python
-def create_database_session(provider):
-    config = provider.resolve(DatabaseConfig)
-    engine = create_engine(config.connection_string)
-    return sessionmaker(bind=engine)()
+- **Cython Optimization**: Target ~100 ns resolution to match `dependency-injector`.
+- **Memory Reduction**: Use `NamedTuple` for leaner metadata, aiming for ~9–11 MB.
+- **More Frameworks**: Add Django/Aiohttp support.
+- **Docs**: Full MkDocs site with examples and tutorials.
 
-container.add_scoped(DatabaseSession, factory=create_database_session)
-```
+## Why Now?
 
-### Conditional Registration
+Python’s DI ecosystem needs a shake-up. `dependency-injector` is fast but verbose; `depi` cuts boilerplate while staying type-safe and async-friendly. Proven since 2022, it’s ready for your FastAPI app or ML pipeline. Join the community and help shape `depi`’s future!
 
-```python
-def configure_cache(provider):
-    config = provider.resolve(AppConfig)
-    if config.environment == "production":
-        return RedisCache(config.redis_url)
-    else:
-        return InMemoryCache()
+## Contribute
 
-container.add_singleton(CacheInterface, factory=configure_cache)
-```
-
-### Bulk Registration
-
-```python
-# Register multiple services with same lifetime
-container.register_many([
-    UserRepository,
-    OrderRepository,
-    ProductRepository
-], lifetime=Lifetime.Singleton)
-```
-
----
-
-## Comparison with Other DI Frameworks
-
-| Feature                           | depi | dependency-injector | injector | pinject |
-| --------------------------------- | :--: | :-----------------: | :------: | :-----: |
-| **Type Safety**                   |  ✅  |       Partial       |    ✅    | Partial |
-| **Async Factories**               |  ✅  |       Partial       |    ❌    |   ❌    |
-| **Async Context Managers**        |  ✅  |         ❌          |    ❌    |   ❌    |
-| **True Scoped Lifetimes**         |  ✅  |      Manual\*       |    ✅    |   ❌    |
-| **Automatic Scope Cleanup**       |  ✅  |       Manual        |    ✅    |   ❌    |
-| **Factory Functions**             |  ✅  |         ✅          |    ✅    |   ❌    |
-| **Thread Safety**                 |  ✅  |         ✅          |    ✅    | Partial |
-| **Constructor Auto-Detection**    |  ✅  |         ❌          |    ❌    |   ✅    |
-| **Cyclic Dependency Detection**   |  ✅  |         ❌          |    ❌    |   ❌    |
-| **Lifetime Validation**           |  ✅  |         ❌          |    ❌    |   ❌    |
-| **Framework Integration Helpers** |  ✅  |         ❌          | Partial  |   ❌    |
-| **Strict Mode**                   |  ✅  |         ❌          |    ❌    |   ❌    |
-| **Topological Sorting**           |  ✅  |         ❌          |    ❌    |   ❌    |
-| **Performance Caching**           |  ✅  |         ✅          |    ❌    |   ❌    |
-| **.NET-Style API**                |  ✅  |         ❌          |    ❌    |   ❌    |
-
-**Key Advantages:**
-
-- **🚀 Async-First**: Native async/await support throughout, including async factories and context managers
-- **🔒 Lifecycle Safety**: Prevents transient dependencies in singletons, detects circular dependencies
-- **🎯 Developer Experience**: Familiar .NET patterns, automatic dependency detection, clear error messages
-- **⚡ Performance**: Constructor caching, topological sorting for optimal resolution order
-- **🔧 Framework Ready**: Built-in FastAPI/Flask middleware, no additional configuration needed
-
-\*dependency-injector requires manual scope management using Resource providers or resetting singletons
-
----
-
-## Error Handling
-
-depi provides clear error messages for common DI issues:
-
-```python
-# Circular dependency detection
-# DependencyError: Cyclic dependency detected involving 'UserService'
-
-# Missing registration
-# DependencyError: Failed to locate registration for type 'DatabaseConfig'
-
-# Lifetime violations
-# DependencyError: Cannot inject transient 'Logger' into singleton 'UserService'
-```
-
----
-
-## Best Practices
-
-### 1. Use Interface-Based Design
-
-```python
-from abc import ABC, abstractmethod
-
-class IUserRepository(ABC):
-    @abstractmethod
-    def get_user(self, user_id: int): pass
-
-class SqlUserRepository(IUserRepository):
-    def get_user(self, user_id: int):
-        # SQL implementation
-        pass
-
-# Register interface to implementation
-container.add_singleton(IUserRepository, SqlUserRepository)
-```
-
-### 2. Configure Once, Use Everywhere
-
-```python
-def configure_services() -> ServiceCollection:
-    container = ServiceCollection()
-
-    # Infrastructure
-    container.add_singleton(DatabaseConfig)
-    container.add_singleton(ILogger, ConsoleLogger)
-
-    # Repositories
-    container.add_singleton(IUserRepository, SqlUserRepository)
-
-    # Services
-    container.add_transient(UserService)
-
-    return container
-
-# Use in your application
-container = configure_services()
-provider = container.build_provider()
-```
-
-### 3. Leverage Scopes for Request Handling
-
-```python
-# In web applications, create a scope per request
-async def handle_request(request):
-    async with provider.create_scope() as scope:
-        handler = await scope.resolve_async(RequestHandler)
-        return await handler.process(request)
-```
-
----
-
-## API Reference
-
-### ServiceCollection
-
-- `add_singleton(type, implementation=None, instance=None, factory=None)`
-- `add_transient(type, implementation=None, factory=None)`
-- `add_scoped(type, implementation=None, factory=None)`
-- `register_many(types, lifetime=Lifetime.Transient)`
-
-### ServiceProvider
-
-- `resolve(type) -> instance`
-- `resolve_async(type) -> Awaitable[instance]`
-- `create_scope() -> ServiceScope`
-
-### ServiceScope
-
-- `resolve(type) -> instance`
-- `resolve_async(type) -> Awaitable[instance]`
-- `dispose()`
-
----
-
-## Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-- **Issues**: Bug reports and feature requests
-- **Pull Requests**: Fork, implement, test, and submit PRs
-- **Documentation**: Help improve our docs and examples
-
----
+Try `depi` on [PyPI](https://pypi.org/project/depi/). File issues, share feedback, or contribute on [GitHub](https://github.com/yourusername/depi). Let’s build the future of Python DI together!
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
-
----
-
-## Support
-
-- 📖 **Documentation**: [Read the full docs](https://depi.readthedocs.io)
-- 🐛 **Issues**: [GitHub Issues](https://github.com/yourusername/depi/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/yourusername/depi/discussions)
+MIT License. See [LICENSE](LICENSE) for details.

@@ -2841,16 +2841,13 @@ class TestDependencyInjectorDecorator(unittest.TestCase):
         """Test strict mode behavior with missing dependencies"""
         injector = DependencyInjector(self.provider, strict=True)
 
-        @injector.inject
-        async def test_function(config: Configuration, missing: SampleService):
-            return config, missing
+        with self.assertRaises(ValueError) as context:
+            @injector.inject
+            async def test_function(config: Configuration, missing: SampleService):
+                return config, missing
 
-        with injector.create_scope() as scope:
-            test_function._scope = scope
-            with self.assertRaises(Exception) as context:
-                asyncio.run(test_function())
-
-            self.assertIn("Failed to resolve dependency", str(context.exception))
+        self.assertIn("Failed to resolve dependency", str(context.exception))
+        self.assertIn("SampleService", str(context.exception))
 
     def test_non_strict_mode_missing_dependency(self):
         """Test non-strict mode behavior with missing dependencies"""
