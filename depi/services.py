@@ -295,43 +295,38 @@ class ServiceProvider:
         Optimized with fast path for singletons and minimal locking.
         """
         reg = self._get_registered_dependency(_type)
+        lifetime = reg.lifetime
 
-        if reg.lifetime == Lifetime.Singleton:
-            # Fast path: lock-free cache check (covers 99% of singleton calls)
-            instance = self._singleton_instances.get(_type)
+        if lifetime == Lifetime.Singleton:
+            # Avoid repeated dict and attribute lookups
+            cache = self._singleton_instances
+
+            instance = cache.get(_type)
             if instance is not None:
                 return instance
 
-            # Slow path: need to create singleton (double-checked locking)
             with self._cache_lock:
-                # Double-check in case another thread created it
-                instance = self._singleton_instances.get(_type)
+                instance = cache.get(_type)
                 if instance is not None:
                     return instance
 
-                # Create new singleton
                 if reg.factory:
                     instance = reg.factory(self)
                 elif reg.instance is not None:
-                    # Pre-built during build() phase
                     instance = reg.instance
                 else:
-                    # Lazy singleton
                     instance = reg.activate(self)
 
-                # Cache and return
-                self._singleton_instances[_type] = instance
+                cache[_type] = instance
                 return instance
 
-        elif reg.lifetime == Lifetime.Transient:
-            # Simple transient path
+        elif lifetime == Lifetime.Transient:
             return reg.factory(self) if reg.factory else reg.activate(self)
 
-        elif reg.lifetime == Lifetime.Scoped:
+        elif lifetime == Lifetime.Scoped:
             raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
 
-        else:
-            raise Exception(f"Unknown lifetime: {reg.lifetime}")
+        raise Exception(f"Unknown lifetime: {lifetime}")
 
     async def resolve_async(self, _type: type) -> Any:
         """
@@ -618,68 +613,101 @@ class DependencyInjector:
         """
         Decorator for functions (sync or async). Fills annotated params
         from the active scope (attached via middleware).
-        Only injects parameters that are registered in the dependency container.
+        In strict mode, attempts to inject all annotated parameters.
+        In non-strict mode, only injects parameters that are registered.
         """
         sig = get_signature(fn)
         is_async = asyncio.iscoroutinefunction(fn)
 
+        # Create a new signature removing injectable parameters for FastAPI compatibility
+        new_params = []
+        injectable_params = {}
+
+        for name, param in sig.parameters.items():
+            # Check if this parameter should be injected
+            if param.annotation != inspect.Parameter.empty:
+                if self._strict:
+                    # In strict mode, verify all annotated parameters are registered
+                    if param.annotation not in self._provider._dependency_lookup:
+                        raise ValueError(
+                            f"Failed to resolve dependency '{param.annotation.__name__}' "
+                            f"for parameter '{name}': dependency is not registered"
+                        )
+                    injectable_params[name] = param.annotation
+                else:
+                    # In non-strict mode, only inject registered parameters
+                    if param.annotation in self._provider._dependency_lookup:
+                        injectable_params[name] = param.annotation
+                    else:
+                        # Keep non-injectable parameters in the signature
+                        new_params.append(param)
+            else:
+                # Keep non-annotated parameters in the signature
+                new_params.append(param)
+
+        # Create new signature without injectable parameters
+        new_sig = sig.replace(parameters=new_params)
+
         if is_async:
             @wraps(fn)
             async def async_wrapper(*args, **kwargs):
-                if not hasattr(async_wrapper, '_scope') or async_wrapper._scope is None:
-                    raise Exception("No active ServiceScope. Did you apply DI middleware?")
-                scope: ServiceScope = async_wrapper._scope
+                # Use scope if available, otherwise fall back to provider
+                if hasattr(async_wrapper, '_scope') and async_wrapper._scope is not None:
+                    resolver = async_wrapper._scope
+                    resolve_method = resolver.resolve_async
+                else:
+                    resolver = self._provider
+                    resolve_method = resolver.resolve_async
 
-                for name, param in sig.parameters.items():
-                    if name in kwargs or param.annotation == inspect.Parameter.empty:
-                        continue
-
-                    # Only inject if the parameter type is registered in the container
-                    if param.annotation in self._provider._dependency_lookup:
+                # Inject dependencies
+                for name, param_type in injectable_params.items():
+                    if name not in kwargs:  # Don't override if already provided
                         try:
-                            kwargs[name] = await scope.resolve_async(param.annotation)
+                            kwargs[name] = await resolve_method(param_type)
                         except Exception as e:
                             if self._strict:
-                                raise Exception(
-                                    f"Failed to resolve dependency '{param.annotation.__name__}' "
+                                raise ValueError(
+                                    f"Failed to resolve dependency '{param_type.__name__}' "
                                     f"for '{name}': {e}"
                                 )
                             logger.debug(f"Skipping DI for '{name}': {e}")
 
                 return await fn(*args, **kwargs)
 
-            # Placeholder for middleware to set
+            # Set the new signature so FastAPI sees the clean version
+            async_wrapper.__signature__ = new_sig
             async_wrapper._scope = None
             return async_wrapper
         else:
             @wraps(fn)
             def sync_wrapper(*args, **kwargs):
-                if not hasattr(sync_wrapper, '_scope') or sync_wrapper._scope is None:
-                    raise Exception("No active ServiceScope. Did you apply DI middleware?")
-                scope: ServiceScope = sync_wrapper._scope
+                # Use scope if available, otherwise fall back to provider
+                if hasattr(sync_wrapper, '_scope') and sync_wrapper._scope is not None:
+                    resolver = sync_wrapper._scope
+                else:
+                    resolver = self._provider
 
-                for name, param in sig.parameters.items():
-                    if name in kwargs or param.annotation == inspect.Parameter.empty:
-                        continue
-
-                    # Only inject if the parameter type is registered in the container
-                    if param.annotation in self._provider._dependency_lookup:
+                # Inject dependencies
+                for name, param_type in injectable_params.items():
+                    if name not in kwargs:  # Don't override if already provided
                         try:
-                            kwargs[name] = scope.resolve(param.annotation)
+                            kwargs[name] = resolver.resolve(param_type)
                         except Exception as e:
                             if self._strict:
-                                raise Exception(
-                                    f"Failed to resolve dependency '{param.annotation.__name__}' "
+                                raise ValueError(
+                                    f"Failed to resolve dependency '{param_type.__name__}' "
                                     f"for '{name}': {e}"
                                 )
                             logger.debug(f"Skipping DI for '{name}': {e}")
 
                 return fn(*args, **kwargs)
 
-            # Placeholder for middleware to set
+            # Set the new signature so FastAPI sees the clean version
+            sync_wrapper.__signature__ = new_sig
             sync_wrapper._scope = None
             return sync_wrapper
 
+    # TODO: Quart, Django, Flask, FastAPI integration helpers will ultimately be migrated to separate packages
     def setup_fastapi(self, app):
         """
         Install FastAPI middleware to create a new scope per request,

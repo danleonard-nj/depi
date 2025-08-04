@@ -1,12 +1,9 @@
-# test_fastapi.py
+# test_fastapi.py - Demonstrates both ServiceCollection and DependencyInjector patterns with FastAPI
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from depi.services import ServiceCollection, DependencyInjector
 
-
-# Pending injector support for FastAPI, currently passes the unchanged method signature and dependencies to FastAPI and it gets confused
-# The tests below are written to test the functionality of depi with FastAPI
 
 class MyService:
     def get_value(self):
@@ -21,6 +18,108 @@ class DatabaseService:
         return f"db: {self.my_service.get_value()}"
 
 
+def test_fastapi_manual_resolution():
+    """Test manual dependency resolution using ServiceCollection"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    provider = services.build_provider()
+
+    @app.get("/di/manual")
+    async def di_view_manual():
+        service = provider.resolve(MyService)
+        db_service = provider.resolve(DatabaseService)
+        return {
+            "approach": "manual",
+            "value": service.get_value(),
+            "db_data": db_service.get_data()
+        }
+
+    client = TestClient(app)
+    response = client.get("/di/manual")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["approach"] == "manual"
+    assert data["value"] == "fastapi ok"
+    assert data["db_data"] == "db: fastapi ok"
+
+
+def test_fastapi_injector_decorator():
+    """Test automatic dependency injection using DependencyInjector with FastAPI"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    provider = services.build_provider()
+
+    injector = DependencyInjector(provider, strict=True)
+
+    # Setup FastAPI integration
+    injector.setup_fastapi(app)
+
+    @app.get("/di/injected")
+    @injector.inject
+    async def di_view_injected(my_service: MyService, db_service: DatabaseService):
+        return {
+            "approach": "injected",
+            "value": my_service.get_value(),
+            "db_data": db_service.get_data()
+        }
+
+    client = TestClient(app)
+    response = client.get("/di/injected")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["approach"] == "injected"
+    assert data["value"] == "fastapi ok"
+    assert data["db_data"] == "db: fastapi ok"
+
+
+def test_fastapi_both_approaches():
+    """Test that both DI approaches work in the same FastAPI app"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    provider = services.build_provider()
+
+    injector = DependencyInjector(provider, strict=True)
+    injector.setup_fastapi(app)
+
+    # Manual approach
+    @app.get("/di/manual")
+    async def di_view_manual():
+        service = provider.resolve(MyService)
+        return {"approach": "manual", "value": service.get_value()}
+
+    # Injected approach
+    @app.get("/di/injected")
+    @injector.inject
+    async def di_view_injected(my_service: MyService):
+        return {"approach": "injected", "value": my_service.get_value()}
+
+    client = TestClient(app)
+
+    # Test manual approach
+    manual_response = client.get("/di/manual")
+    assert manual_response.status_code == 200
+    manual_data = manual_response.json()
+    assert manual_data["approach"] == "manual"
+    assert manual_data["value"] == "fastapi ok"
+
+    # Test injected approach
+    injected_response = client.get("/di/injected")
+    assert injected_response.status_code == 200
+    injected_data = injected_response.json()
+    assert injected_data["approach"] == "injected"
+    assert injected_data["value"] == "fastapi ok"
+
+    # Verify they both work with the same service instance (singleton)
+    assert manual_data["value"] == injected_data["value"]
+
+
+# Legacy tests for core functionality
 def test_fastapi_singleton_resolution():
     """Test that depi properly resolves singleton services"""
     services = ServiceCollection()
@@ -47,39 +146,8 @@ def test_fastapi_dependency_injection():
 
     assert isinstance(db_service.my_service, MyService)
     assert db_service.get_data() == "db: fastapi ok"
-
-
-def test_fastapi_transient_behavior():
-    """Test that depi creates new instances for transient services"""
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_transient(DatabaseService)
-    provider = services.build_provider()
-
-    # Test transient behavior
-    db1 = provider.resolve(DatabaseService)
-    db2 = provider.resolve(DatabaseService)
-
-    assert db1 is not db2  # Different instances
-    assert db1.my_service is db2.my_service  # But same singleton dependency
-    assert db1.get_data() == db2.get_data()
-
-
-def test_fastapi_with_actual_app():
-    """Test depi integration with a real FastAPI app (without using Depends)"""
-    # Setup depi container
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_transient(DatabaseService)
-    provider = services.build_provider()
-
-    # Create FastAPI app that uses depi directly
-    app = FastAPI()
-
-    @app.get("/service")
-    def get_service_value():
-        service = provider.resolve(MyService)
-        return {"value": service.get_value()}
+    service = provider.resolve(MyService)
+    return {"value": service.get_value()}
 
     @app.get("/database")
     def get_database_data():

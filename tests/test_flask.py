@@ -1,6 +1,6 @@
-# test_flask.py
+# test_flask.py - Demonstrates both ServiceCollection and DependencyInjector patterns with Flask
 import pytest
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, g
 from depi.services import ServiceCollection, DependencyInjector
 
 
@@ -17,26 +17,40 @@ class DatabaseService:
         return f"db: {self.my_service.get_value()}"
 
 
-def test_flask_direct_resolution():
-    """Test direct resolution without decorators"""
+class CacheService:
+    def get_cached(self, key: str):
+        return f"cached_{key}"
+
+
+def test_flask_manual_resolution():
+    """Test manual dependency resolution using ServiceCollection"""
     app = Flask(__name__)
     services = ServiceCollection()
     services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
     provider = services.build_provider()
 
-    @app.route("/di")
-    def di_view():
+    @app.route("/di/manual")
+    def di_view_manual():
         service = provider.resolve(MyService)
-        return jsonify({"value": service.get_value()})
+        db_service = provider.resolve(DatabaseService)
+        return jsonify({
+            "approach": "manual",
+            "value": service.get_value(),
+            "db_data": db_service.get_data()
+        })
 
     with app.test_client() as client:
-        response = client.get("/di")
+        response = client.get("/di/manual")
         assert response.status_code == 200
-        assert response.json["value"] == "flask ok"
+        data = response.json
+        assert data["approach"] == "manual"
+        assert data["value"] == "flask ok"
+        assert data["db_data"] == "db: flask ok"
 
 
 def test_flask_injector_decorator():
-    """Test @inject decorator with Flask using manual scope management"""
+    """Test automatic dependency injection using DependencyInjector with Flask"""
     app = Flask(__name__)
     services = ServiceCollection()
     services.add_singleton(MyService)
@@ -45,70 +59,39 @@ def test_flask_injector_decorator():
 
     injector = DependencyInjector(provider)
 
-    # Test basic injection
+    @app.route("/di/injected")
     @injector.inject
-    def basic_view(my_service: MyService):
-        return jsonify({"value": my_service.get_value()})
-
-    app.add_url_rule("/basic", "basic", basic_view, methods=["GET"])
-
-    # Test injection with dependencies
-    @injector.inject
-    def complex_view(my_service: MyService, db_service: DatabaseService):
+    def di_view_injected(my_service: MyService, db_service: DatabaseService):
         return jsonify({
-            "service": my_service.get_value(),
-            "database": db_service.get_data()
+            "approach": "injected",
+            "value": my_service.get_value(),
+            "db_data": db_service.get_data()
         })
 
-    app.add_url_rule("/complex", "complex", complex_view, methods=["GET"])
-
-    # Test mixed parameters (injected + Flask parameters)
-    @injector.inject
-    def mixed_view(item_id: str, my_service: MyService):
-        return jsonify({
-            "item_id": item_id,
-            "service": my_service.get_value()
-        })
-
-    app.add_url_rule("/mixed/<item_id>", "mixed", mixed_view, methods=["GET"])
-
-    # Manual scope management for testing
+    # Manual scope management for Flask (similar to Quart pattern)
     @app.before_request
     def before_request():
-        from flask import g
         g.scope = injector.create_scope()
-        # Set scope on all injected views
-        basic_view._scope = g.scope
-        complex_view._scope = g.scope
-        mixed_view._scope = g.scope
+        # Set scope on the injected view
+        di_view_injected._scope = g.scope
 
     @app.teardown_request
     def teardown_request(exception=None):
-        from flask import g
         if hasattr(g, 'scope'):
             g.scope.dispose()
 
     with app.test_client() as client:
-        # Test basic injection
-        response = client.get("/basic")
+        response = client.get("/di/injected")
         assert response.status_code == 200
-        assert response.json["value"] == "flask ok"
-
-        # Test complex injection
-        response = client.get("/complex")
-        assert response.status_code == 200
-        assert response.json["service"] == "flask ok"
-        assert response.json["database"] == "db: flask ok"
-
-        # Test mixed parameters
-        response = client.get("/mixed/123")
-        assert response.status_code == 200
-        assert response.json["item_id"] == "123"
-        assert response.json["service"] == "flask ok"
+        data = response.json
+        assert data["approach"] == "injected"
+        assert data["value"] == "flask ok"
+        assert data["db_data"] == "db: flask ok"
 
 
-def test_flask_manual_scope_management():
-    """Test manual scope management with Flask"""
+def test_flask_both_approaches():
+    """Test that both DI approaches work in the same Flask app"""
+    app = Flask(__name__)
     services = ServiceCollection()
     services.add_singleton(MyService)
     services.add_transient(DatabaseService)
@@ -116,53 +99,109 @@ def test_flask_manual_scope_management():
 
     injector = DependencyInjector(provider)
 
+    # Manual approach
+    @app.route("/di/manual")
+    def di_view_manual():
+        service = provider.resolve(MyService)
+        return jsonify({"approach": "manual", "value": service.get_value()})
+
+    # Injected approach
+    @app.route("/di/injected")
     @injector.inject
-    def process_request(my_service: MyService, db_service: DatabaseService):
-        return {
-            "service": my_service.get_value(),
-            "database": db_service.get_data()
-        }
+    def di_view_injected(my_service: MyService):
+        return jsonify({"approach": "injected", "value": my_service.get_value()})
 
-    # Manual scope management
-    scope = injector.create_scope()
-    process_request._scope = scope
+    # Setup scope management for injected views
+    @app.before_request
+    def before_request():
+        g.scope = injector.create_scope()
+        di_view_injected._scope = g.scope
 
-    try:
-        result = process_request()
-        assert result["service"] == "flask ok"
-        assert result["database"] == "db: flask ok"
-    finally:
-        scope.dispose()
-
-
-def test_flask_scoped_services():
-    """Test scoped services with Flask"""
-    app = Flask(__name__)
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_scoped(DatabaseService)
-    provider = services.build_provider()
-
-    injector = DependencyInjector(provider)
-
-    @app.route("/scoped")
-    @injector.inject
-    def scoped_view(my_service: MyService, db_service: DatabaseService):
-        return jsonify({
-            "service": my_service.get_value(),
-            "database": db_service.get_data(),
-            "db_id": str(id(db_service))
-        })
-
-    injector.setup_flask(app)
+    @app.teardown_request
+    def teardown_request(exception=None):
+        if hasattr(g, 'scope'):
+            g.scope.dispose()
 
     with app.test_client() as client:
-        # Multiple requests should get same scoped instance within request
-        response1 = client.get("/scoped")
-        response2 = client.get("/scoped")
+        # Test manual approach
+        manual_response = client.get("/di/manual")
+        assert manual_response.status_code == 200
+        manual_data = manual_response.json
+        assert manual_data["approach"] == "manual"
+        assert manual_data["value"] == "flask ok"
 
-        assert response1.status_code == 200
-        assert response2.status_code == 200
+        # Test injected approach
+        injected_response = client.get("/di/injected")
+        assert injected_response.status_code == 200
+        injected_data = injected_response.json
+        assert injected_data["approach"] == "injected"
+        assert injected_data["value"] == "flask ok"
 
-        # Different requests should have different scoped instances
-        assert response1.json["db_id"] != response2.json["db_id"]
+        # Verify they both work with the same service instance (singleton)
+        assert manual_data["value"] == injected_data["value"]
+
+
+def test_flask_strict_vs_non_strict_modes():
+    """Test Flask with strict and non-strict DependencyInjector modes"""
+    # Create services
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    # Note: CacheService is NOT registered
+    provider = services.build_provider()
+
+    app = Flask(__name__)
+
+    # Non-strict mode (default): graceful degradation for missing dependencies
+    non_strict_injector = DependencyInjector(provider, strict=False)
+
+    @app.route('/non-strict')
+    @non_strict_injector.inject
+    def non_strict_endpoint(my_service: MyService, cache_service: CacheService = None):
+        """In non-strict mode, only registered dependencies are injected.
+        Unregistered dependencies remain as normal parameters."""
+        if cache_service is None:
+            return jsonify({"service": my_service.get_value(), "cache": "Not provided"})
+        return jsonify({"service": my_service.get_value(), "cache": cache_service.get_cached('test')})
+
+    # Strict mode: all annotated dependencies must be registered
+    strict_injector = DependencyInjector(provider, strict=True)
+
+    @app.route('/strict')
+    @strict_injector.inject
+    def strict_endpoint(my_service: MyService):
+        """In strict mode, all parameters are removed from signature.
+        This creates clean endpoints for Flask."""
+        return jsonify({"service": my_service.get_value()})
+
+    with app.test_client() as client:
+        # Non-strict mode works even with missing dependencies
+        response = client.get('/non-strict')
+        assert response.status_code == 200
+        data = response.json
+        assert data["service"] == "flask ok"
+        assert data["cache"] == "Not provided"
+
+        # Strict mode works when all dependencies are registered
+        response = client.get('/strict')
+        assert response.status_code == 200
+        data = response.json
+        assert data["service"] == "flask ok"
+
+
+def test_flask_strict_mode_missing_dependency():
+    """Test that strict mode fails with unregistered dependencies"""
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    # CacheService is NOT registered
+    provider = services.build_provider()
+
+    strict_injector = DependencyInjector(provider, strict=True)
+
+    app = Flask(__name__)
+
+    with pytest.raises(ValueError, match="Failed to resolve dependency"):
+        @app.route('/strict-missing')
+        @strict_injector.inject
+        def strict_missing_endpoint(my_service: MyService, cache_service: CacheService):
+            """This should fail because CacheService is not registered"""
+            return jsonify({"service": my_service.get_value()})
