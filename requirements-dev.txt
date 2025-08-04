@@ -1,0 +1,25 @@
+# Core testing
+pytest>=7.4
+pytest-asyncio>=0.21.1
+
+# Web framework test clients
+fastapi>=0.100,<0.110
+starlette>=0.27,<0.37
+httpx>=0.23,<0.27
+
+quart>=0.18,<0.20
+flask>=2.3,<3.0
+django>=4.2,<5.0
+pytest-django>=4.5
+
+# Benchmarking
+pytest-benchmark>=4.0.0
+
+# Type checking (optional)
+mypy>=1.4
+types-requests
+types-Flask
+
+# Linting / formatting (optional)
+black>=23.7
+ruff>=0.0.291
