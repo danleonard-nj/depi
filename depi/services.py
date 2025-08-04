@@ -707,6 +707,7 @@ class DependencyInjector:
             sync_wrapper._scope = None
             return sync_wrapper
 
+    # TODO: Quart, Django, Flask, FastAPI integration helpers will ultimately be migrated to separate packages
     def setup_fastapi(self, app):
         """
         Install FastAPI middleware to create a new scope per request,
