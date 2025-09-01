@@ -1,5 +1,16 @@
+"""
+depi – A Modern, Type-Safe Dependency Injection Framework for Python
+
+Provides:
+- Type-hinted constructor injection
+- Singleton, Transient, and Scoped lifetimes
+- Async factory and constructor support
+- FastAPI and Flask integration via middleware
+"""
+
 import logging
 from threading import Lock
+from functools import lru_cache
 from functools import wraps
 from typing import Any, Callable, Optional, Type
 import asyncio
@@ -8,32 +19,65 @@ import inspect
 logger = logging.getLogger(__name__)
 
 
+@lru_cache(maxsize=None)
+def get_signature(fn):
+    return inspect.signature(fn)
+
+
 class Lifetime:
+    """
+    Supported lifetimes for registered dependencies.
+    """
     Singleton = 'singleton'
     Transient = 'transient'
     Scoped = 'scoped'
 
 
 class ConstructorDependency:
+    """
+    Represents a single constructor parameter dependency.
+
+    Attributes:
+        name:        Name of the parameter in the constructor.
+        dependency_type: The type annotation required.
+    """
+
     def __init__(self, name: str, _type: type):
         self.name = name
         self.dependency_type = _type
 
 
 class DependencyRegistration:
+    """
+    Holds metadata and factory logic for a single registered service.
+
+    Attributes:
+        dependency_type:     The abstract/base type.
+        implementation_type: The concrete class to instantiate.
+        lifetime:            Lifetime.Singleton, Transient, or Scoped.
+        instance:            Stored instance for singletons.
+        factory:             Optional callable(provider) → instance.
+        constructor_params:  List of ConstructorDependency for auto-injection.
+    """
+    __slots__ = (
+        "dependency_type", "implementation_type", "lifetime", "instance", "factory",
+        "constructor_params", "_type_name", "_resolver_fn"
+    )
+
     def __hash__(self):
         return hash(self.implementation_type)
 
     def __eq__(self, other):
-        return isinstance(other, DependencyRegistration) and self.implementation_type == other.implementation_type
+        return isinstance(other, DependencyRegistration) and \
+            self.implementation_type == other.implementation_type
 
     def __init__(
         self,
         dependency_type: type,
         lifetime: str,
-        implementation_type: type = None,
+        implementation_type: Optional[type] = None,
         instance: Any = None,
-        factory: Callable = None,
+        factory: Callable[['DependencyRegistration'], Any] = None,
         constructor_params: list[ConstructorDependency] = None
     ):
         self.dependency_type = dependency_type
@@ -44,109 +88,67 @@ class DependencyRegistration:
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
 
-    def get_activate_constructor_params(
-        self,
-        dependency_lookup: dict[type, 'DependencyRegistration'],
-        cache: dict,
-        cache_lock: Lock
-    ) -> dict[str, Any]:
-        if not self.constructor_params:
-            return {}
-        with cache_lock:
-            if self.implementation_type in cache:
-                return cache[self.implementation_type]
-        constructor_params = {}
-        for param in self.constructor_params:
-            param_dependency = dependency_lookup.get(param.dependency_type)
-            if param_dependency is None:
-                raise Exception(
-                    f"Could not find dependency for '{param.dependency_type.__name__}' when activating '{self._type_name}' constructor params"
-                )
-            constructor_params[param.name] = param_dependency.activate(dependency_lookup, cache, cache_lock)
-        with cache_lock:
-            cache[self.implementation_type] = constructor_params
-        return constructor_params
-
-    async def get_activate_constructor_params_async(
-        self,
-        dependency_lookup: dict[type, 'DependencyRegistration'],
-        cache: dict,
-        cache_lock: Lock
-    ) -> dict[str, Any]:
-        if not self.constructor_params:
-            return {}
-        with cache_lock:
-            if self.implementation_type in cache:
-                return cache[self.implementation_type]
-        constructor_params = {}
-        for param in self.constructor_params:
-            param_dependency = dependency_lookup.get(param.dependency_type)
-            if param_dependency is None:
-                raise Exception(
-                    f"Could not find dependency for '{param.dependency_type.__name__}' when activating '{self._type_name}' constructor params"
-                )
-            constructor_params[param.name] = await param_dependency.activate_async(dependency_lookup, cache, cache_lock)
-        with cache_lock:
-            cache[self.implementation_type] = constructor_params
-        return constructor_params
-
     def activate(
         self,
-        dependency_lookup: dict[type, 'DependencyRegistration'],
-        cache: dict,
-        cache_lock: Lock
+        provider=None
     ) -> Any:
-        if self.lifetime == Lifetime.Singleton and self.instance is not None:
-            return self.instance
-        if self.factory:
-            return self.factory(self)
+        """
+        Instantiate this service according to its lifetime and factory/constructor logic.
+        """
         if not self.constructor_params:
             instance = self.implementation_type()
         else:
-            constructor_params = self.get_activate_constructor_params(dependency_lookup, cache, cache_lock)
-            instance = self.implementation_type(**constructor_params)
-        if self.lifetime == Lifetime.Singleton:
-            self.instance = instance
+            kwargs = {param.name: provider.resolve(param.dependency_type) for param in self.constructor_params}
+            instance = self.implementation_type(**kwargs)
         return instance
 
     async def activate_async(
         self,
-        dependency_lookup: dict[type, 'DependencyRegistration'],
-        cache: dict,
-        cache_lock: Lock
+        provider=None
     ) -> Any:
-        if self.lifetime == Lifetime.Singleton and self.instance is not None:
-            return self.instance
-        if self.factory:
-            result = self.factory(self)
-            if asyncio.iscoroutine(result):
-                return await result
-            return result
+        """
+        Async variant of activate, supporting coroutine factories and constructors.
+        """
         if not self.constructor_params:
-            instance = self.implementation_type()
+            return self.implementation_type()
         else:
-            constructor_params = await self.get_activate_constructor_params_async(dependency_lookup, cache, cache_lock)
-            instance = self.implementation_type(**constructor_params)
-        if self.lifetime == Lifetime.Singleton:
-            self.instance = instance
-        return instance
+            kwargs = {}
+            for param in self.constructor_params:
+                kwargs[param.name] = await provider.resolve_async(param.dependency_type)
+            return self.implementation_type(**kwargs)
 
 
 class ServiceCollection:
+    """
+    Collects service registrations before building a ServiceProvider.
+    """
+
+    __slots__ = ("name", "dependency_type", "_container")
+
     def __init__(self):
         self._container: dict[type, DependencyRegistration] = {}
 
-    def get_type_dependencies(self, _type: type) -> list:
-        params = inspect.signature(_type).parameters
-        types = []
+    def get_type_dependencies(self, _type: type) -> list[ConstructorDependency]:
+        """
+        Inspect __init__ signature to auto-discover constructor dependencies.
+        """
+        params = get_signature(_type).parameters
+        deps = []
         for name, param in params.items():
             if param.annotation == inspect.Parameter.empty:
-                raise Exception(f"Parameter '{name}' in {_type.__name__} has no annotation")
-            constructor_dependency = ConstructorDependency(name=name, _type=param.annotation)
-            types.append(constructor_dependency)
-        return types
+                raise Exception(f"Missing type annotation for parameter '{name}' in {_type.__name__}")
+            deps.append(ConstructorDependency(name=name, _type=param.annotation))
+        return deps
 
-    def add(self, dependency_type: type, implementation_type: Optional[type] = None, **kwargs):
+    def add(
+        self,
+        dependency_type: type,
+        implementation_type: Optional[type] = None,
+        **kwargs
+    ):
+        """
+        Shorthand to register a service (default: Transient).
+        """
         kwargs.setdefault('lifetime', Lifetime.Transient)
         self._register_dependency(dependency_type, implementation_type, **kwargs)
 
@@ -155,8 +157,9 @@ class ServiceCollection:
         dependency_type: type,
         implementation_type: Optional[type] = None,
         instance: Any = None,
-        factory: Optional[Callable] = None
+        factory: Callable = None
     ) -> None:
+        """Register a singleton service."""
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
@@ -169,8 +172,9 @@ class ServiceCollection:
         self,
         dependency_type: type,
         implementation_type: Optional[type] = None,
-        factory: Optional[Callable] = None
+        factory: Callable = None
     ) -> None:
+        """Register a transient service."""
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
@@ -182,8 +186,9 @@ class ServiceCollection:
         self,
         dependency_type: type,
         implementation_type: Optional[type] = None,
-        factory: Optional[Callable] = None
+        factory: Callable = None
     ) -> None:
+        """Register a scoped service."""
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
@@ -192,6 +197,9 @@ class ServiceCollection:
         )
 
     def register_many(self, types: list[type], lifetime: str = Lifetime.Transient):
+        """
+        Bulk-register multiple types with the same lifetime.
+        """
         for t in types:
             getattr(self, f"add_{lifetime.lower()}")(t)
 
@@ -201,205 +209,294 @@ class ServiceCollection:
         implementation_type: Optional[type],
         **kwargs
     ) -> None:
-        implementation_type = implementation_type or dependency_type
+        """
+        Internal helper to create and store a DependencyRegistration.
+        """
+        impl = implementation_type or dependency_type
+
         constructor_params = (
-            self.get_type_dependencies(implementation_type)
+            self.get_type_dependencies(impl)
             if kwargs.get('factory') is None else []
         )
-        dependency = DependencyRegistration(
-            implementation_type=implementation_type,
+
+        def resolver_fn(provider, *_):
+            return impl(
+                **{
+                    param.name: provider.resolve(param.dependency_type)
+                    for param in constructor_params
+                }
+            )
+
+        reg = DependencyRegistration(
             dependency_type=dependency_type,
+            implementation_type=impl,
             constructor_params=constructor_params,
             **kwargs
         )
-        self._container[dependency_type] = dependency
+        reg._resolver_fn = resolver_fn
+        self._container[dependency_type] = reg
 
-    def get_container(self) -> dict:
-        """Get the internal dependency container"""
+    def get_container(self) -> dict[type, DependencyRegistration]:
+        """Expose raw registration dictionary."""
         return self._container
 
     def build_provider(self) -> 'ServiceProvider':
+        """
+        Finalize registrations and return a built ServiceProvider.
+        """
         provider = ServiceProvider(self)
         provider.build()
         return provider
 
 
 class ServiceProvider:
+    """
+    Resolves and caches instances according to registration metadata.
+
+    Key methods:
+      - resolve(type)      → sync instance
+      - resolve_async(type)→ async instance
+      - build() / build_async() → pre-instantiate singletons
+      - create_scope() → new ServiceScope for scoped lifetimes
+    """
+
+    __slots__ = (
+        '_service_collection', '_dependency_lookup', '_dependencies', '_singleton_instances',
+        '_cache', '_cache_lock', '_singletons', '_factories', '_transients'
+    )
+
     def __init__(self, service_collection: ServiceCollection):
         self._service_collection = service_collection
         self._dependency_lookup = service_collection.get_container()
         self._dependencies = list(self._dependency_lookup.values())
-        self._singleton_instances = {}
-        self._cache = {}
+        self._singleton_instances: dict[type, Any] = {}
+        self._cache: dict = {}
         self._cache_lock = Lock()
         self._initialize_provider()
 
     def _initialize_provider(self) -> None:
-        self._singletons = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton and not d.factory]
-        self._factories = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton and d.factory]
-        self._transients = [d for d in self._dependencies if d.lifetime == Lifetime.Transient]
+        """Partition registrations by lifetime and factory presence."""
+        self._singletons = [
+            d for d in self._dependencies
+            if d.lifetime == Lifetime.Singleton and not d.factory
+        ]
+        self._factories = [
+            d for d in self._dependencies
+            if d.lifetime == Lifetime.Singleton and d.factory
+        ]
+        self._transients = [
+            d for d in self._dependencies
+            if d.lifetime == Lifetime.Transient
+        ]
 
     def resolve(self, _type: type) -> Any:
-        registration = self._get_registered_dependency(_type)
-        if registration.lifetime == Lifetime.Singleton:
-            with self._cache_lock:
-                if _type in self._singleton_instances:
-                    return self._singleton_instances[_type]
-            if registration.instance is not None:
-                with self._cache_lock:
-                    self._singleton_instances[_type] = registration.instance
-                return registration.instance
-            if registration.factory:
-                instance = registration.factory(self)
-                registration.instance = instance
-                with self._cache_lock:
-                    self._singleton_instances[_type] = instance
+        """
+        Resolve a registered service synchronously.
+        Optimized with fast path for singletons and minimal locking.
+        """
+        reg = self._get_registered_dependency(_type)
+        lifetime = reg.lifetime
+
+        if lifetime == Lifetime.Singleton:
+            # Avoid repeated dict and attribute lookups
+            cache = self._singleton_instances
+
+            instance = cache.get(_type)
+            if instance is not None:
                 return instance
-            instance = registration.activate(self._dependency_lookup, self._cache, self._cache_lock)
+
             with self._cache_lock:
-                self._singleton_instances[_type] = instance
-            return instance
-        if registration.lifetime == Lifetime.Transient:
-            if registration.factory:
-                return registration.factory(self)
-            return registration.activate(self._dependency_lookup, self._cache, self._cache_lock)
-        if registration.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a scope.")
-        raise Exception(f"Unknown lifetime: {registration.lifetime}")
+                instance = cache.get(_type)
+                if instance is not None:
+                    return instance
+
+                if reg.factory:
+                    instance = reg.factory(self)
+                elif reg.instance is not None:
+                    instance = reg.instance
+                else:
+                    instance = reg.activate(self)
+
+                cache[_type] = instance
+                return instance
+
+        elif lifetime == Lifetime.Transient:
+            return reg.factory(self) if reg.factory else reg.activate(self)
+
+        elif lifetime == Lifetime.Scoped:
+            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
+
+        raise Exception(f"Unknown lifetime: {lifetime}")
 
     async def resolve_async(self, _type: type) -> Any:
-        registration = self._get_registered_dependency(_type)
-        if registration.lifetime == Lifetime.Singleton:
-            with self._cache_lock:
-                if _type in self._singleton_instances:
-                    return self._singleton_instances[_type]
-            if registration.instance is not None:
-                with self._cache_lock:
-                    self._singleton_instances[_type] = registration.instance
-                return registration.instance
-            if registration.factory:
-                instance = registration.factory(self)
-                if asyncio.iscoroutine(instance):
-                    instance = await instance
-                registration.instance = instance
-                with self._cache_lock:
-                    self._singleton_instances[_type] = instance
+        """
+        Resolve a registered service asynchronously.
+        Optimized with fast path for singletons and minimal locking.
+        """
+        reg = self._get_registered_dependency(_type)
+
+        if reg.lifetime == Lifetime.Singleton:
+            # Fast path: lock-free cache check (covers 99% of singleton calls)
+            instance = self._singleton_instances.get(_type)
+            if instance is not None:
                 return instance
-            instance = await registration.activate_async(self._dependency_lookup, self._cache, self._cache_lock)
+
+            # Slow path: need to create singleton (double-checked locking)
             with self._cache_lock:
+                # Double-check in case another thread created it
+                instance = self._singleton_instances.get(_type)
+                if instance is not None:
+                    return instance
+
+                # Create new singleton
+                if reg.factory:
+                    inst = reg.factory(self)
+                    if asyncio.iscoroutine(inst):
+                        inst = await inst
+                    instance = inst
+                elif reg.instance is not None:
+                    # Pre-built during build() phase
+                    instance = reg.instance
+                else:
+                    # Lazy singleton
+                    instance = await reg.activate_async(self)
+
+                # Cache and return
                 self._singleton_instances[_type] = instance
-            return instance
-        if registration.lifetime == Lifetime.Transient:
-            if registration.factory:
-                instance = registration.factory(self)
-                if asyncio.iscoroutine(instance):
-                    return await instance
                 return instance
-            return await registration.activate_async(self._dependency_lookup, self._cache, self._cache_lock)
-        if registration.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a scope.")
-        raise Exception(f"Unknown lifetime: {registration.lifetime}")
+
+        elif reg.lifetime == Lifetime.Transient:
+            if reg.factory:
+                inst = reg.factory(self)
+                return await inst if asyncio.iscoroutine(inst) else inst
+            else:
+                return await reg.activate_async(self)
+
+        elif reg.lifetime == Lifetime.Scoped:
+            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
+
+        else:
+            raise Exception(f"Unknown lifetime: {reg.lifetime}")
+
+        if reg.lifetime == Lifetime.Transient:
+            inst = reg.factory(self) if reg.factory else await reg.activate_async(self)
+            return await inst if asyncio.iscoroutine(inst) else inst
+
+        if reg.lifetime == Lifetime.Scoped:
+            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
+
+        raise Exception(f"Unknown lifetime: {reg.lifetime}")
 
     def _get_registered_dependency(
         self,
         implementation_type: type,
         requesting_type: Optional[DependencyRegistration] = None
     ) -> DependencyRegistration:
-        registration = self._dependency_lookup.get(implementation_type)
-        if registration is not None:
-            return registration
-        if requesting_type is not None:
+        """
+        Lookup registration or error out, optionally showing context.
+        """
+        reg = self._dependency_lookup.get(implementation_type)
+        if reg:
+            return reg
+        if requesting_type:
             raise Exception(
-                f"Failed to locate registration for type '{implementation_type.__name__}' when instantiating type '{requesting_type._type_name}'"
+                f"Failed to locate registration for '{implementation_type.__name__}' "
+                f"while instantiating '{requesting_type._type_name}'"
             )
-        else:
-            raise Exception(f"Failed to locate registration for type '{implementation_type.__name__}'")
-
-    def _verify_singleton(self, registration: DependencyRegistration) -> None:
-        for param in registration.constructor_params:
-            req_reg = self._get_registered_dependency(param.dependency_type, registration)
-            if req_reg.lifetime == Lifetime.Transient:
-                raise Exception(
-                    f"Cannot inject dependency '{param.dependency_type.__name__}' with transient lifetime into singleton '{registration._type_name}'"
-                )
+        raise Exception(f"Failed to locate registration for '{implementation_type.__name__}'")
 
     def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
+        """
+        Perform DFS-based topological sort to detect cycles and order singletons.
+        """
         visited = set()
         visiting = set()
-        order = []
+        order: list[DependencyRegistration] = []
 
         def dfs(dep: DependencyRegistration):
             if dep in visited:
                 return
             if dep in visiting:
-                raise Exception(f"Cyclic dependency detected involving '{dep._type_name}'")
+                raise Exception(f"Cyclic dependency detected: {dep._type_name}")
             visiting.add(dep)
             for param in dep.constructor_params:
-                required_dep = self._get_registered_dependency(param.dependency_type, dep)
-                dfs(required_dep)
+                next_dep = self._get_registered_dependency(param.dependency_type, dep)
+                dfs(next_dep)
             visiting.remove(dep)
             visited.add(dep)
             order.append(dep)
 
-        for dep in dependencies:
-            if dep not in visited:
-                dfs(dep)
+        for d in dependencies:
+            dfs(d)
         return order
 
     def build(self) -> 'ServiceProvider':
-        all_to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(all_to_build)
+        """
+        Instantiate all singletons in dependency order.
+        """
+        to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
+        sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
-            if reg.instance is not None:
-                continue
-            if reg.factory:
-                instance = reg.factory(self)
-                if asyncio.iscoroutine(instance):
-                    # Create new event loop if needed for async factories
-                    try:
-                        loop = asyncio.get_running_loop()
-                        # If we're already in an event loop, we need to handle this differently
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as executor:
-                            future = executor.submit(asyncio.run, instance)
-                            instance = future.result()
-                    except RuntimeError:
-                        # No event loop running, we can use run_until_complete
-                        instance = asyncio.run(instance)
-            else:
-                instance = reg.activate(self._dependency_lookup, self._cache, self._cache_lock)
-            reg.instance = instance
-            with self._cache_lock:
-                self._singleton_instances[reg.dependency_type] = instance
+            if reg.instance is None:
+                if reg.factory:
+                    inst = reg.factory(self)
+                    # support coroutine factories
+                    if asyncio.iscoroutine(inst):
+                        try:
+                            loop = asyncio.get_running_loop()
+                            # run in separate thread if already in event loop
+                            import concurrent.futures
+                            with concurrent.futures.ThreadPoolExecutor() as ex:
+                                inst = ex.submit(asyncio.run, inst).result()
+                        except RuntimeError:
+                            inst = asyncio.run(inst)
+                else:
+                    inst = reg.activate(self)
+                reg.instance = inst
+                with self._cache_lock:
+                    self._singleton_instances[reg.dependency_type] = inst
         return self
 
     async def build_async(self) -> 'ServiceProvider':
-        all_to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(all_to_build)
+        """
+        Async variant of build(), awaiting any coroutine constructors or factories.
+        """
+        to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
+        sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
-            if reg.instance is not None:
-                continue
-            if reg.factory:
-                instance = reg.factory(self)
-                if asyncio.iscoroutine(instance):
-                    instance = await instance
-            else:
-                instance = await reg.activate_async(self._dependency_lookup, self._cache, self._cache_lock)
-            reg.instance = instance
-            with self._cache_lock:
-                self._singleton_instances[reg.dependency_type] = instance
+            if reg.instance is None:
+                if reg.factory:
+                    inst = reg.factory(self)
+                    if asyncio.iscoroutine(inst):
+                        inst = await inst
+                else:
+                    inst = await reg.activate_async(self)
+                reg.instance = inst
+                with self._cache_lock:
+                    self._singleton_instances[reg.dependency_type] = inst
         return self
 
     def create_scope(self) -> 'ServiceScope':
+        """Begin a new scoped lifetime context."""
         return ServiceScope(self)
 
 
 class ServiceScope:
+    """
+    Provides scoped resolution: Singleton → cascades to provider, Transient → new each call,
+    Scoped → one per scope instance.
+    """
+
+    __slots__ = (
+        '_provider', '_scoped_instances', '_dependency_lookup',
+        '_cache', '_cache_lock'
+    )
+
     def __init__(self, provider: ServiceProvider):
         self._provider = provider
         self._scoped_instances: dict[type, Any] = {}
         self._dependency_lookup = provider._dependency_lookup
-        self._cache = {}
+        self._cache: dict = {}
         self._cache_lock = Lock()
 
     def __enter__(self) -> 'ServiceScope':
@@ -412,108 +509,226 @@ class ServiceScope:
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> None:
-        for instance in self._scoped_instances.values():
-            if hasattr(instance, '__aexit__'):
-                await instance.__aexit__(exc_type, exc_value, traceback)
+        # Allow async cleanup handlers on scoped instances
+        for inst in self._scoped_instances.values():
+            if hasattr(inst, '__aexit__'):
+                await inst.__aexit__(exc_type, exc_value, traceback)
         self.dispose()
 
     def resolve(self, _type: type) -> Any:
-        registration = self._provider._get_registered_dependency(implementation_type=_type)
-        if registration.lifetime == Lifetime.Singleton:
-            return self._provider.resolve(_type)
-        if registration.lifetime == Lifetime.Transient:
-            if registration.factory:
-                return registration.factory(self)
-            return registration.activate(self._dependency_lookup, self._cache, self._cache_lock)
-        if registration.lifetime == Lifetime.Scoped:
-            if _type in self._scoped_instances:
-                return self._scoped_instances[_type]
-            if registration.factory:
-                instance = registration.factory(self)
-            else:
-                instance = registration.activate(self._dependency_lookup, self._cache, self._cache_lock)
-            self._scoped_instances[_type] = instance
-            return instance
-        raise Exception(f"Unknown lifetime: {registration.lifetime}")
+        provider = self._provider
+        reg = provider._get_registered_dependency(_type)
+        life = reg.lifetime
+
+        # Singleton always via root provider
+        if life is Lifetime.Singleton:
+            return provider.resolve(_type)
+
+        insts = self._scoped_instances
+
+        # Scoped: return cached if present
+        if life is Lifetime.Scoped:
+            inst = insts.get(_type)
+            if inst is not None:
+                return inst
+
+        # Transient or new Scoped instance
+        factory = reg.factory
+        if factory:
+            inst = factory(self)
+        else:
+            # your precompiled sync resolver
+            inst = reg._resolver_fn(self)
+
+        # Cache scoped
+        if life is Lifetime.Scoped:
+            insts[_type] = inst
+
+        return inst
 
     async def resolve_async(self, _type: type) -> Any:
-        registration = self._provider._get_registered_dependency(implementation_type=_type)
-        if registration.lifetime == Lifetime.Singleton:
-            return await self._provider.resolve_async(_type)
-        if registration.lifetime == Lifetime.Transient:
-            if registration.factory:
-                instance = registration.factory(self)
-                if asyncio.iscoroutine(instance):
-                    return await instance
-                return instance
-            return await registration.activate_async(self._dependency_lookup, self._cache, self._cache_lock)
-        if registration.lifetime == Lifetime.Scoped:
-            if _type in self._scoped_instances:
-                return self._scoped_instances[_type]
-            if registration.factory:
-                instance = registration.factory(self)
-                if asyncio.iscoroutine(instance):
-                    instance = await instance
-            else:
-                instance = await registration.activate_async(self._dependency_lookup, self._cache, self._cache_lock)
-            self._scoped_instances[_type] = instance
-            return instance
-        raise Exception(f"Unknown lifetime: {registration.lifetime}")
+        provider = self._provider
+        reg = provider._get_registered_dependency(_type)
+        life = reg.lifetime
+
+        # Singleton via root provider
+        if life is Lifetime.Singleton:
+            return await provider.resolve_async(_type)
+
+        insts = self._scoped_instances
+
+        # Scoped: return cached if present
+        if life is Lifetime.Scoped:
+            inst = insts.get(_type)
+            if inst is not None:
+                return inst
+
+        # Transient or new Scoped instance
+        factory = reg.factory
+        if factory:
+            inst = factory(self)
+            if asyncio.iscoroutine(inst):
+                inst = await inst
+        else:
+            # fall back to the generic async activation
+            inst = await reg.activate_async(self)
+
+        # Cache scoped
+        if life is Lifetime.Scoped:
+            insts[_type] = inst
+
+        return inst
 
     def dispose(self) -> None:
+        """
+        Clear scoped instances and internal cache. Call dispose on disposable instances.
+        """
+        # Dispose of any disposable instances
+        for instance in self._scoped_instances.values():
+            if hasattr(instance, 'dispose') and callable(getattr(instance, 'dispose')):
+                try:
+                    instance.dispose()
+                except Exception as e:
+                    logger.warning(f"Error disposing scoped instance: {e}")
+
         self._scoped_instances.clear()
         self._cache.clear()
 
 
 class DependencyInjector:
+    """
+    Decorator and middleware helper for auto-injecting dependencies
+    into function parameters based on type annotations.
+    """
+
     def __init__(self, provider: ServiceProvider, strict: bool = False):
         self._provider = provider
         self._strict = strict
 
     def create_scope(self) -> ServiceScope:
+        """Expose ability to create a manual scope."""
         return self._provider.create_scope()
 
     def inject(self, fn: Callable) -> Callable:
-        sig = inspect.signature(fn)
+        """
+        Decorator for functions (sync or async). Fills annotated params
+        from the active scope (attached via middleware).
+        In strict mode, attempts to inject all annotated parameters.
+        In non-strict mode, only injects parameters that are registered.
+        """
+        sig = get_signature(fn)
+        is_async = asyncio.iscoroutinefunction(fn)
 
-        @wraps(fn)
-        async def wrapper(*args, **kwargs):
-            if not hasattr(wrapper, '_scope'):
-                raise Exception("ServiceScope not set. Ensure DI middleware is applied.")
-            scope = wrapper._scope
-            for name, param in sig.parameters.items():
-                if name not in kwargs and param.annotation != inspect.Parameter.empty:
-                    try:
-                        if asyncio.iscoroutinefunction(fn):
-                            kwargs[name] = await scope.resolve_async(param.annotation)
-                        else:
-                            kwargs[name] = scope.resolve(param.annotation)
-                    except Exception as e:
-                        if self._strict:
-                            raise Exception(f"Failed to resolve dependency '{param.annotation.__name__}' for parameter '{name}': {e}")
-                        logger.debug(f"Parameter '{name}' not resolved by DI: {e}")
-                        pass
-            if asyncio.iscoroutinefunction(fn):
+        # Create a new signature removing injectable parameters for FastAPI compatibility
+        new_params = []
+        injectable_params = {}
+
+        for name, param in sig.parameters.items():
+            # Check if this parameter should be injected
+            if param.annotation != inspect.Parameter.empty:
+                if self._strict:
+                    # In strict mode, verify all annotated parameters are registered
+                    if param.annotation not in self._provider._dependency_lookup:
+                        raise ValueError(
+                            f"Failed to resolve dependency '{param.annotation.__name__}' "
+                            f"for parameter '{name}': dependency is not registered"
+                        )
+                    injectable_params[name] = param.annotation
+                else:
+                    # In non-strict mode, only inject registered parameters
+                    if param.annotation in self._provider._dependency_lookup:
+                        injectable_params[name] = param.annotation
+                    else:
+                        # Keep non-injectable parameters in the signature
+                        new_params.append(param)
+            else:
+                # Keep non-annotated parameters in the signature
+                new_params.append(param)
+
+        # Create new signature without injectable parameters
+        new_sig = sig.replace(parameters=new_params)
+
+        if is_async:
+            @wraps(fn)
+            async def async_wrapper(*args, **kwargs):
+                # Use scope if available, otherwise fall back to provider
+                if hasattr(async_wrapper, '_scope') and async_wrapper._scope is not None:
+                    resolver = async_wrapper._scope
+                    resolve_method = resolver.resolve_async
+                else:
+                    resolver = self._provider
+                    resolve_method = resolver.resolve_async
+
+                # Inject dependencies
+                for name, param_type in injectable_params.items():
+                    if name not in kwargs:  # Don't override if already provided
+                        try:
+                            kwargs[name] = await resolve_method(param_type)
+                        except Exception as e:
+                            if self._strict:
+                                raise ValueError(
+                                    f"Failed to resolve dependency '{param_type.__name__}' "
+                                    f"for '{name}': {e}"
+                                )
+                            logger.debug(f"Skipping DI for '{name}': {e}")
+
                 return await fn(*args, **kwargs)
-            return fn(*args, **kwargs)
 
-        wrapper._scope = None
-        return wrapper
+            # Set the new signature so FastAPI sees the clean version
+            async_wrapper.__signature__ = new_sig
+            async_wrapper._scope = None
+            return async_wrapper
+        else:
+            @wraps(fn)
+            def sync_wrapper(*args, **kwargs):
+                # Use scope if available, otherwise fall back to provider
+                if hasattr(sync_wrapper, '_scope') and sync_wrapper._scope is not None:
+                    resolver = sync_wrapper._scope
+                else:
+                    resolver = self._provider
 
+                # Inject dependencies
+                for name, param_type in injectable_params.items():
+                    if name not in kwargs:  # Don't override if already provided
+                        try:
+                            kwargs[name] = resolver.resolve(param_type)
+                        except Exception as e:
+                            if self._strict:
+                                raise ValueError(
+                                    f"Failed to resolve dependency '{param_type.__name__}' "
+                                    f"for '{name}': {e}"
+                                )
+                            logger.debug(f"Skipping DI for '{name}': {e}")
+
+                return fn(*args, **kwargs)
+
+            # Set the new signature so FastAPI sees the clean version
+            sync_wrapper.__signature__ = new_sig
+            sync_wrapper._scope = None
+            return sync_wrapper
+
+    # TODO: Quart, Django, Flask, FastAPI integration helpers will ultimately be migrated to separate packages
     def setup_fastapi(self, app):
+        """
+        Install FastAPI middleware to create a new scope per request,
+        attach it to request.state.scope, and wire decorated endpoints.
+        """
         from fastapi import Request
 
         @app.middleware("http")
         async def di_middleware(request: Request, call_next):
             with self.create_scope() as scope:
                 request.state.scope = scope
+                # Attach scope to all @inject endpoints
                 for route in app.routes:
                     if hasattr(route.endpoint, '_scope'):
                         route.endpoint._scope = scope
-                response = await call_next(request)
-                return response
+                return await call_next(request)
 
     def setup_flask(self, app):
+        """
+        Install Flask hooks to manage a scope per request via flask.g.
+        """
         from flask import g
 
         @app.before_request
@@ -525,6 +740,7 @@ class DependencyInjector:
             if hasattr(g, 'scope'):
                 g.scope.dispose()
 
+        # Wrap each decorated view so it gets the current scope
         for rule in app.url_map.iter_rules():
             endpoint = app.view_functions[rule.endpoint]
             if hasattr(endpoint, '_scope'):

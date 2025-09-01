@@ -33,6 +33,8 @@ web = ["flask"]
 dev = [
     "pytest",
     "pytest-cov",
+    "pytest-benchmark",
+    "pytest-asyncio",
     "black",
     "flake8",
     "mypy",

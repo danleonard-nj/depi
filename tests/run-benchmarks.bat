@@ -1,0 +1,1 @@
+pytest test_benchmarks.py --benchmark-enable --benchmark-json=benchmark_results.json
