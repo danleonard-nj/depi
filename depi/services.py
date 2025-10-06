@@ -78,7 +78,8 @@ class DependencyRegistration:
         implementation_type: Optional[type] = None,
         instance: Any = None,
         factory: Callable[['DependencyRegistration'], Any] = None,
-        constructor_params: list[ConstructorDependency] = None
+        constructor_params: list[ConstructorDependency] = None,
+        resolver_fn: Optional[Callable] = None
     ):
         self.dependency_type = dependency_type
         self.lifetime = lifetime
@@ -87,6 +88,7 @@ class DependencyRegistration:
         self.factory = factory
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
+        self._resolver_fn = resolver_fn
 
     def activate(
         self,
@@ -231,9 +233,9 @@ class ServiceCollection:
             dependency_type=dependency_type,
             implementation_type=impl,
             constructor_params=constructor_params,
+            resolver_fn=resolver_fn,
             **kwargs
         )
-        reg._resolver_fn = resolver_fn
         self._container[dependency_type] = reg
 
     def get_container(self) -> dict[type, DependencyRegistration]:
