@@ -42,6 +42,8 @@ class ConstructorDependency:
         dependency_type: The type annotation required.
     """
 
+    __slots__ = ("name", "dependency_type")
+
     def __init__(self, name: str, _type: type):
         self.name = name
         self.dependency_type = _type
@@ -203,7 +205,11 @@ class ServiceCollection:
         Bulk-register multiple types with the same lifetime.
         """
         for t in types:
-            getattr(self, f"add_{lifetime.lower()}")(t)
+            self._register_dependency(
+                dependency_type=t,
+                implementation_type=None,
+                lifetime=lifetime
+            )
 
     def _register_dependency(
         self,
