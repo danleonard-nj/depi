@@ -13,11 +13,11 @@ from depi.services import (
     ServiceCollection,
     ServiceProvider,
     ServiceScope,
-    DependencyInjector,
     Lifetime,
     DependencyRegistration,
     ConstructorDependency
 )
+from depi.injectors import DependencyInjector
 
 # configure root logger once
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
