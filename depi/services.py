@@ -413,6 +413,44 @@ class ServiceProvider:
             )
         raise Exception(f"Failed to locate registration for '{implementation_type.__name__}'")
 
+    def _validate_dependencies(self) -> None:
+        """
+        Validate dependency lifetimes to prevent invalid lifetime combinations.
+
+        Rules:
+        - Singletons cannot depend on transient services (only a single instance
+          of the transient dependency would be injected during instantiation of the
+          singleton, which is not the intended behavior of a transient dependency)
+        - Singletons cannot depend on scoped services (the scoped instance would be
+          resolved once during singleton creation and reused, breaking scope isolation)
+        """
+        for reg in self._dependencies:
+            if reg.lifetime == Lifetime.Singleton:
+                # Only validate constructor-injected dependencies (not factory-based)
+                # Factory-based registrations don't have constructor_params
+                if not reg.constructor_params:
+                    continue
+
+                for param in reg.constructor_params:
+                    dep_reg = self._dependency_lookup.get(param.dependency_type)
+                    if dep_reg is None:
+                        continue  # Missing dependency will be caught elsewhere
+
+                    if dep_reg.lifetime == Lifetime.Transient:
+                        raise Exception(
+                            f"Singleton '{reg._type_name}' cannot depend on transient "
+                            f"'{dep_reg._type_name}'. Transient dependencies would only "
+                            f"be instantiated once during singleton creation, which is "
+                            f"not the intended behavior of a transient service."
+                        )
+                    if dep_reg.lifetime == Lifetime.Scoped:
+                        raise Exception(
+                            f"Singleton '{reg._type_name}' cannot depend on scoped "
+                            f"'{dep_reg._type_name}'. Scoped dependencies would only "
+                            f"be instantiated once during singleton creation, breaking "
+                            f"scope isolation."
+                        )
+
     def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
         """
         Perform DFS-based topological sort to detect cycles and order singletons.
@@ -442,6 +480,9 @@ class ServiceProvider:
         """
         Instantiate all singletons in dependency order.
         """
+        # Validate dependencies before building
+        self._validate_dependencies()
+
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
@@ -469,6 +510,9 @@ class ServiceProvider:
         """
         Async variant of build(), awaiting any coroutine constructors or factories.
         """
+        # Validate dependencies before building
+        self._validate_dependencies()
+
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
