@@ -1605,8 +1605,131 @@ class TestErrorHandling(unittest.TestCase):
 
     def test_scoped_service_in_singleton_error(self):
         """Test error when singleton depends on scoped service"""
-        # Skip this test for now - this validation is not yet implemented
-        self.skipTest("Lifetime validation not yet implemented")
+        class ScopedDependency:
+            def __init__(self):
+                pass
+
+        class SingletonWithScopedDep:
+            def __init__(self, scoped: ScopedDependency):
+                self.scoped = scoped
+
+        collection = ServiceCollection()
+        collection.add_scoped(ScopedDependency)
+        collection.add_singleton(SingletonWithScopedDep)
+
+        with self.assertRaises(Exception) as context:
+            collection.build_provider()
+
+        self.assertIn("Singleton", str(context.exception))
+        self.assertIn("cannot depend on scoped", str(context.exception))
+        self.assertIn("ScopedDependency", str(context.exception))
+
+    def test_transient_service_in_singleton_error(self):
+        """Test error when singleton depends on transient service"""
+        class TransientDependency:
+            def __init__(self):
+                pass
+
+        class SingletonWithTransientDep:
+            def __init__(self, transient: TransientDependency):
+                self.transient = transient
+
+        collection = ServiceCollection()
+        collection.add_transient(TransientDependency)
+        collection.add_singleton(SingletonWithTransientDep)
+
+        with self.assertRaises(Exception) as context:
+            collection.build_provider()
+
+        self.assertIn("Singleton", str(context.exception))
+        self.assertIn("cannot depend on transient", str(context.exception))
+        self.assertIn("TransientDependency", str(context.exception))
+
+    def test_singleton_with_factory_can_use_transient_deps(self):
+        """Test that factory-based singletons can use transient dependencies manually.
+
+        Factory-based registrations don't have constructor_params, so they won't
+        be flagged by the validation. The factory author is responsible for
+        understanding the lifetime implications.
+        """
+        class TransientDependency:
+            def __init__(self):
+                pass
+
+        class SingletonWithFactory:
+            def __init__(self, transient):
+                self.transient = transient
+
+        def singleton_factory(provider):
+            # Factory explicitly resolves transient - author understands the implications
+            transient = provider.resolve(TransientDependency)
+            return SingletonWithFactory(transient)
+
+        collection = ServiceCollection()
+        collection.add_transient(TransientDependency)
+        collection.add_singleton(SingletonWithFactory, factory=singleton_factory)
+
+        # This should NOT raise an error because factory-based registrations
+        # are excluded from validation - the author is responsible
+        provider = collection.build_provider()
+        service = provider.resolve(SingletonWithFactory)
+        self.assertIsNotNone(service.transient)
+
+    def test_singleton_chain_with_transient_at_end_error(self):
+        """Test that a singleton chain is rejected if it ends with a transient dependency.
+
+        Singleton A -> Singleton B -> Transient C is invalid because B (singleton)
+        cannot depend on C (transient).
+        """
+        class TransientC:
+            def __init__(self):
+                pass
+
+        class SingletonB:
+            def __init__(self, c: TransientC):
+                self.c = c
+
+        class SingletonA:
+            def __init__(self, b: SingletonB):
+                self.b = b
+
+        collection = ServiceCollection()
+        collection.add_transient(TransientC)
+        collection.add_singleton(SingletonB)
+        collection.add_singleton(SingletonA)
+
+        with self.assertRaises(Exception) as context:
+            collection.build_provider()
+
+        # Should fail because SingletonB depends on TransientC
+        self.assertIn("SingletonB", str(context.exception))
+        self.assertIn("cannot depend on transient", str(context.exception))
+        self.assertIn("TransientC", str(context.exception))
+
+    def test_singleton_depending_on_singleton_with_transient_is_ok(self):
+        """Test that a singleton can depend on another singleton (which might resolve transients).
+
+        Singleton A -> Singleton B is fine, as long as B doesn't have transient constructor deps.
+        """
+        class SingletonB:
+            def __init__(self):
+                pass
+
+        class SingletonA:
+            def __init__(self, b: SingletonB):
+                self.b = b
+
+        collection = ServiceCollection()
+        collection.add_singleton(SingletonB)
+        collection.add_singleton(SingletonA)
+
+        # This should work fine
+        provider = collection.build_provider()
+        a = provider.resolve(SingletonA)
+        b = provider.resolve(SingletonB)
+
+        self.assertIsInstance(a.b, SingletonB)
+        self.assertIs(a.b, b)
 
     def test_multiple_error_accumulation(self):
         """Test that multiple errors are handled gracefully"""
