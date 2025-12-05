@@ -428,6 +428,9 @@ class ServiceProvider:
             if reg.lifetime == Lifetime.Singleton:
                 # Only validate constructor-injected dependencies (not factory-based)
                 # Factory-based registrations don't have constructor_params
+                if not reg.constructor_params:
+                    continue
+
                 for param in reg.constructor_params:
                     dep_reg = self._dependency_lookup.get(param.dependency_type)
                     if dep_reg is None:
