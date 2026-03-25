@@ -2,6 +2,8 @@
 
 `depi` is a type-safe dependency injection framework that provides automatic dependency resolution through type annotations. Designed for modern Python applications, it offers both strict and non-strict injection modes to support different architectural patterns and gradual adoption strategies.
 
+Interested in `depi`'s lineage before the dawn of AI? `depi` has been in iterative development since 2020! (lineage from 2022: https://github.com/danleonard-nj/framework/tree/main/framework/di)
+
 ## Key Features
 
 - **Automatic Resolution**: Analyzes type annotations to resolve dependency graphs without manual configuration, handling complex multi-level architectures with dozens of interconnected services
