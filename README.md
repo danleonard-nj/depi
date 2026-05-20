@@ -438,6 +438,26 @@ def test_order_processing():
 
 Scoped lifetimes automatically clean up resources when the scope ends, preventing memory leaks in long-running applications.
 
+### Lazy Singleton Instantiation
+
+**Singleton instantiation is lazy by default** as of this version. Singletons are validated (cycle detection, dependency-resolution checks) at `build_provider()` time but constructed on first `resolve()`. This avoids paying the construction cost — and holding the memory — for singletons that are never used in a given process lifetime.
+
+- To opt a specific service into eager construction, pass `eager=True` to `add_singleton`:
+
+  ```python
+  collection.add_singleton(MyService, eager=True)
+  ```
+
+- To restore the previous always-eager behavior globally (e.g. in production, to fail fast on every construction error at startup), pass `eager_all=True` to `build_provider`:
+
+  ```python
+  provider = collection.build_provider(eager_all=True)
+  ```
+
+- **Factory registrations remain eager by default** — registering a factory typically implies wanting any side-effecting setup to run at startup.
+
+This is a behavioral change from earlier releases: code that relied on a singleton's constructor running during `build_provider()` (for side effects or fail-fast validation) should opt in with `eager=True` or `eager_all=True`.
+
 ## Performance Considerations
 
 Resolution time scales O(n) with dependency depth, maintaining consistent performance even with complex enterprise architectures. For optimal performance with intricate dependency graphs:

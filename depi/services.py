@@ -9,7 +9,7 @@ Provides:
 """
 
 import logging
-from threading import Lock
+from threading import Lock, RLock
 from functools import lru_cache
 from functools import wraps
 from typing import Any, Callable, Optional, Type
@@ -19,7 +19,7 @@ import inspect
 logger = logging.getLogger(__name__)
 
 
-@lru_cache(maxsize=None)
+@lru_cache(maxsize=2048)
 def get_signature(fn):
     return inspect.signature(fn)
 
@@ -61,7 +61,7 @@ class DependencyRegistration:
     """
     __slots__ = (
         "dependency_type", "implementation_type", "lifetime", "instance", "factory",
-        "constructor_params", "_type_name", "_resolver_fn"
+        "eager", "constructor_params", "_type_name", "_resolver_fn"
     )
 
     def __hash__(self):
@@ -78,6 +78,7 @@ class DependencyRegistration:
         implementation_type: Optional[type] = None,
         instance: Any = None,
         factory: Callable[['DependencyRegistration'], Any] = None,
+        eager: bool = False,
         constructor_params: list[ConstructorDependency] = None
     ):
         self.dependency_type = dependency_type
@@ -85,6 +86,7 @@ class DependencyRegistration:
         self.implementation_type = implementation_type or dependency_type
         self.instance = instance
         self.factory = factory
+        self.eager = eager
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
 
@@ -157,15 +159,22 @@ class ServiceCollection:
         dependency_type: type,
         implementation_type: Optional[type] = None,
         instance: Any = None,
-        factory: Callable = None
+        factory: Callable = None,
+        eager: bool = False
     ) -> None:
-        """Register a singleton service."""
+        """Register a singleton service.
+
+        By default singletons are constructed lazily on first ``resolve()``.
+        Pass ``eager=True`` to construct this singleton during
+        ``build_provider()``.
+        """
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
             lifetime=Lifetime.Singleton,
             instance=instance,
-            factory=factory
+            factory=factory,
+            eager=eager
         )
 
     def add_transient(
@@ -240,10 +249,20 @@ class ServiceCollection:
         """Expose raw registration dictionary."""
         return self._container
 
-    def build_provider(self) -> 'ServiceProvider':
+    def build_provider(self, eager_all: bool = False) -> 'ServiceProvider':
         """
         Finalize registrations and return a built ServiceProvider.
+
+        By default, singleton instances are constructed lazily on first
+        ``resolve()``. Validation (cycle detection, missing dependency
+        resolution) still runs at build time so misconfigurations fail
+        fast. Pass ``eager_all=True`` to restore the previous behaviour
+        of constructing every singleton during build.
         """
+        if eager_all:
+            for reg in self._container.values():
+                if reg.lifetime == Lifetime.Singleton:
+                    reg.eager = True
         provider = ServiceProvider(self)
         provider.build()
         return provider
@@ -271,7 +290,7 @@ class ServiceProvider:
         self._dependencies = list(self._dependency_lookup.values())
         self._singleton_instances: dict[type, Any] = {}
         self._cache: dict = {}
-        self._cache_lock = Lock()
+        self._cache_lock = RLock()
         self._initialize_provider()
 
     def _initialize_provider(self) -> None:
@@ -430,50 +449,77 @@ class ServiceProvider:
             dfs(d)
         return order
 
-    def build(self) -> 'ServiceProvider':
+    def _validate_and_order(self) -> list:
         """
-        Instantiate all singletons in dependency order.
+        Validate the singleton dependency graph and return registrations
+        in topological order.
+
+        This runs all build-time validation (cycle detection, missing
+        dependency lookups) without instantiating any services. Used by
+        both ``build()`` and ``build_async()`` so the lazy and eager
+        paths share the same fail-fast guarantees.
         """
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        return self._topological_sort(to_build)
+
+    def build(self) -> 'ServiceProvider':
+        """
+        Validate the singleton dependency graph and eagerly instantiate
+        only those singletons that opted in via ``eager=True`` along with
+        all singleton factory registrations.
+
+        Lazy singletons are validated and topologically ordered here but
+        constructed on first ``resolve()`` via the existing
+        double-checked locking fast-path.
+        """
+        sorted_deps = self._validate_and_order()
         for reg in sorted_deps:
-            if reg.instance is None:
-                if reg.factory:
-                    inst = reg.factory(self)
-                    # support coroutine factories
-                    if asyncio.iscoroutine(inst):
-                        try:
-                            loop = asyncio.get_running_loop()
-                            # run in separate thread if already in event loop
-                            import concurrent.futures
-                            with concurrent.futures.ThreadPoolExecutor() as ex:
-                                inst = ex.submit(asyncio.run, inst).result()
-                        except RuntimeError:
-                            inst = asyncio.run(inst)
-                else:
-                    inst = reg.activate(self)
-                reg.instance = inst
-                with self._cache_lock:
-                    self._singleton_instances[reg.dependency_type] = inst
+            if not (reg.eager or reg.factory is not None):
+                continue
+            if reg.instance is not None:
+                continue
+            if reg.factory:
+                inst = reg.factory(self)
+                # support coroutine factories
+                if asyncio.iscoroutine(inst):
+                    try:
+                        asyncio.get_running_loop()
+                        # run in separate thread if already in event loop
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as ex:
+                            inst = ex.submit(asyncio.run, inst).result()
+                    except RuntimeError:
+                        inst = asyncio.run(inst)
+            else:
+                inst = reg.activate(self)
+            reg.instance = inst
+            with self._cache_lock:
+                self._singleton_instances[reg.dependency_type] = inst
         return self
 
     async def build_async(self) -> 'ServiceProvider':
         """
         Async variant of build(), awaiting any coroutine constructors or factories.
+
+        Only singletons that opted in via ``eager=True`` and all
+        singleton factory registrations are instantiated; lazy
+        singletons are validated and deferred to first ``resolve()``.
         """
-        to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        sorted_deps = self._validate_and_order()
         for reg in sorted_deps:
-            if reg.instance is None:
-                if reg.factory:
-                    inst = reg.factory(self)
-                    if asyncio.iscoroutine(inst):
-                        inst = await inst
-                else:
-                    inst = await reg.activate_async(self)
-                reg.instance = inst
-                with self._cache_lock:
-                    self._singleton_instances[reg.dependency_type] = inst
+            if not (reg.eager or reg.factory is not None):
+                continue
+            if reg.instance is not None:
+                continue
+            if reg.factory:
+                inst = reg.factory(self)
+                if asyncio.iscoroutine(inst):
+                    inst = await inst
+            else:
+                inst = await reg.activate_async(self)
+            reg.instance = inst
+            with self._cache_lock:
+                self._singleton_instances[reg.dependency_type] = inst
         return self
 
     def create_scope(self) -> 'ServiceScope':

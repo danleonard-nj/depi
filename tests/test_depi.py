@@ -1513,13 +1513,15 @@ class TestErrorHandling(unittest.TestCase):
         self.assertEqual(str(context.exception), "Factory failed")
 
     def test_constructor_exception_handling(self):
-        """Test handling of exceptions in constructors"""
+        """Test handling of exceptions in constructors (eager opt-in)"""
         class FailingService:
             def __init__(self):
                 raise RuntimeError("Constructor failed")
 
         collection = ServiceCollection()
-        collection.add_singleton(FailingService)
+        # Singletons are lazy by default; opt in to eager construction
+        # so the constructor failure surfaces at build_provider() time.
+        collection.add_singleton(FailingService, eager=True)
 
         with self.assertRaises(RuntimeError) as context:
             collection.build_provider()
@@ -2397,12 +2399,12 @@ class TestAdvancedFeatures(unittest.TestCase):
                 self.id = uuid.uuid4()
 
         collection = ServiceCollection()
-        collection.add_singleton(EagerService)
+        collection.add_singleton(EagerService, eager=True)
 
         # Should not be initialized yet
         self.assertEqual(initialization_count, 0)
 
-        # Building provider should initialize singletons
+        # Building provider should initialize eager singletons
         provider = collection.build_provider()
         self.assertEqual(initialization_count, 1)
 
@@ -3197,6 +3199,174 @@ class TestEdgeCasesAndCornerCases(unittest.TestCase):
 
         # Should not raise any errors
         self.assertEqual(len(scope._scoped_instances), 0)
+
+
+class TestLazySingletonInstantiation(unittest.TestCase):
+    """Tests covering lazy-by-default singleton instantiation."""
+
+    def test_singletons_are_lazy_by_default(self):
+        """Singletons must NOT be constructed during build_provider()."""
+        count = {"n": 0}
+
+        class LazyFoo:
+            def __init__(self):
+                count["n"] += 1
+
+        coll = ServiceCollection()
+        coll.add_singleton(LazyFoo)
+        provider = coll.build_provider()
+        self.assertEqual(count["n"], 0)
+
+        first = provider.resolve(LazyFoo)
+        self.assertEqual(count["n"], 1)
+        second = provider.resolve(LazyFoo)
+        self.assertEqual(count["n"], 1)
+        self.assertIs(first, second)
+
+    def test_opt_in_eager_singleton(self):
+        """eager=True on add_singleton must construct during build."""
+        count = {"n": 0}
+
+        class EagerFoo:
+            def __init__(self):
+                count["n"] += 1
+
+        coll = ServiceCollection()
+        coll.add_singleton(EagerFoo, eager=True)
+        provider = coll.build_provider()
+        self.assertEqual(count["n"], 1)
+        provider.resolve(EagerFoo)
+        self.assertEqual(count["n"], 1)
+
+    def test_factories_remain_eager_by_default(self):
+        """Singleton factory registrations must run during build_provider()."""
+        ran = {"called": False}
+
+        class FactoryService:
+            def __init__(self):
+                self.id = uuid.uuid4()
+
+        def make_service(provider):
+            ran["called"] = True
+            return FactoryService()
+
+        coll = ServiceCollection()
+        coll.add_singleton(FactoryService, factory=make_service)
+        coll.build_provider()
+        self.assertTrue(ran["called"])
+
+    def test_cycle_detection_still_fires_when_lazy(self):
+        """Cycles in lazy singletons must still raise at build_provider()."""
+        class CyclicA:
+            pass
+
+        class CyclicB:
+            pass
+
+        coll = ServiceCollection()
+        from depi.services import (
+            DependencyRegistration as _DR,
+            ConstructorDependency as _CD,
+        )
+        coll._container[CyclicA] = _DR(
+            dependency_type=CyclicA,
+            lifetime=Lifetime.Singleton,
+            implementation_type=CyclicA,
+            constructor_params=[_CD('b', CyclicB)],
+        )
+        coll._container[CyclicB] = _DR(
+            dependency_type=CyclicB,
+            lifetime=Lifetime.Singleton,
+            implementation_type=CyclicB,
+            constructor_params=[_CD('a', CyclicA)],
+        )
+
+        with self.assertRaises(Exception) as ctx:
+            coll.build_provider()
+        self.assertIn("Cyclic dependency detected", str(ctx.exception))
+
+    def test_eager_all_parity_with_legacy_behavior(self):
+        """build_provider(eager_all=True) constructs every singleton up front."""
+        counts = [0, 0, 0, 0, 0]
+
+        def make_cls(i):
+            class _C:
+                def __init__(self):
+                    counts[i] += 1
+            _C.__name__ = f"EagerAllService{i}"
+            return _C
+
+        classes = [make_cls(i) for i in range(5)]
+        coll = ServiceCollection()
+        for c in classes:
+            coll.add_singleton(c)
+
+        coll.build_provider(eager_all=True)
+        self.assertEqual(counts, [1, 1, 1, 1, 1])
+
+    def test_concurrent_resolve_constructs_lazy_singleton_once(self):
+        """Concurrent resolves of a lazy singleton produce exactly one instance."""
+        import threading
+        import time
+        construction_count = {"n": 0}
+        lock = threading.Lock()
+        start = threading.Event()
+
+        class SlowSingleton:
+            def __init__(self):
+                # Slow constructor to widen the contention window.
+                time.sleep(0.05)
+                with lock:
+                    construction_count["n"] += 1
+                self.id = uuid.uuid4()
+
+        coll = ServiceCollection()
+        coll.add_singleton(SlowSingleton)
+        provider = coll.build_provider()
+
+        results = [None] * 8
+
+        def worker(idx):
+            start.wait(timeout=5)
+            results[idx] = provider.resolve(SlowSingleton)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for t in threads:
+            t.start()
+        start.set()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(construction_count["n"], 1)
+        first = results[0]
+        self.assertIsNotNone(first)
+        for r in results:
+            self.assertIs(r, first)
+
+
+class TestLazySingletonAsync(unittest.TestCase):
+    """Async-path mirror of the lazy singleton behavior."""
+
+    def test_singletons_are_lazy_by_default_async(self):
+        async def runner():
+            count = {"n": 0}
+
+            class LazyAsyncFoo:
+                def __init__(self):
+                    count["n"] += 1
+
+            coll = ServiceCollection()
+            coll.add_singleton(LazyAsyncFoo)
+            provider = await coll.build_provider().build_async()
+            self.assertEqual(count["n"], 0)
+
+            first = await provider.resolve_async(LazyAsyncFoo)
+            self.assertEqual(count["n"], 1)
+            second = await provider.resolve_async(LazyAsyncFoo)
+            self.assertEqual(count["n"], 1)
+            self.assertIs(first, second)
+
+        asyncio.run(runner())
 
 
 if __name__ == "__main__":
