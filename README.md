@@ -54,6 +54,21 @@ Run the [benchmark script](tests/updated_benchmark_depi.py) to verify results. R
 pip install depi
 ```
 
+## Packaging for PyPI
+
+Build distributable artifacts:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m build
+```
+
+Validate package metadata:
+
+```bash
+python -m twine check dist/*
+```
+
 ## Usage Examples
 
 ### FastAPI Integration (Strict Mode)

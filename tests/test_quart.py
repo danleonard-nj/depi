@@ -92,6 +92,45 @@ async def test_quart_injector_decorator():
 
 
 @pytest.mark.asyncio
+async def test_quart_setup_connector_scopes_multiple_injected_routes():
+    """Test setup_quart wires scope correctly for multiple injected routes."""
+    app = Quart(__name__)
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    provider = services.build_provider()
+
+    injector = DependencyInjector(provider)
+
+    @app.route("/di/injected/one")
+    @injector.inject
+    async def di_view_injected_one(my_service: MyService):
+        return jsonify({"route": "one", "value": my_service.get_value()})
+
+    @app.route("/di/injected/two")
+    @injector.inject
+    async def di_view_injected_two(db_service: DatabaseService):
+        return jsonify({"route": "two", "value": db_service.get_data()})
+
+    injector.setup_quart(app)
+
+    test_client = app.test_client()
+    one = await test_client.get("/di/injected/one")
+    two = await test_client.get("/di/injected/two")
+
+    one_data = await one.get_json()
+    two_data = await two.get_json()
+
+    assert one.status_code == 200
+    assert one_data["route"] == "one"
+    assert one_data["value"] == "quart ok"
+
+    assert two.status_code == 200
+    assert two_data["route"] == "two"
+    assert two_data["value"] == "db: quart ok"
+
+
+@pytest.mark.asyncio
 async def test_quart_both_approaches():
     """Test that both DI approaches work in the same Quart app"""
     app = Quart(__name__)

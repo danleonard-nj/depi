@@ -89,6 +89,41 @@ def test_flask_injector_decorator():
         assert data["db_data"] == "db: flask ok"
 
 
+def test_flask_setup_connector_scopes_multiple_injected_routes():
+    """Test setup_flask wires scope correctly for multiple injected routes."""
+    app = Flask(__name__)
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    provider = services.build_provider()
+
+    injector = DependencyInjector(provider)
+
+    @app.route("/di/injected/one")
+    @injector.inject
+    def di_view_injected_one(my_service: MyService):
+        return jsonify({"route": "one", "value": my_service.get_value()})
+
+    @app.route("/di/injected/two")
+    @injector.inject
+    def di_view_injected_two(db_service: DatabaseService):
+        return jsonify({"route": "two", "value": db_service.get_data()})
+
+    injector.setup_flask(app)
+
+    with app.test_client() as client:
+        one = client.get("/di/injected/one")
+        two = client.get("/di/injected/two")
+
+        assert one.status_code == 200
+        assert one.json["route"] == "one"
+        assert one.json["value"] == "flask ok"
+
+        assert two.status_code == 200
+        assert two.json["route"] == "two"
+        assert two.json["value"] == "db: flask ok"
+
+
 def test_flask_both_approaches():
     """Test that both DI approaches work in the same Flask app"""
     app = Flask(__name__)
