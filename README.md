@@ -54,6 +54,29 @@ Run the [benchmark script](tests/updated_benchmark_depi.py) to verify results. R
 pip install depi
 ```
 
+## Packaging for PyPI
+
+Build distributable artifacts:
+
+```bash
+python -m pip install -e ".[dev]"
+python -m build
+```
+
+Validate package metadata:
+
+```bash
+python -m twine check dist/*
+```
+
+Publishing is automated with GitHub Actions via `.github/workflows/publish-pypi.yml`:
+
+- Runs tests and builds distributions
+- Publishes to PyPI on GitHub Release `published` events
+- Can also be triggered manually with `workflow_dispatch`
+
+The publish job uses PyPI trusted publishing (`id-token: write`) and expects a `pypi` environment in GitHub.
+
 ## Usage Examples
 
 ### FastAPI Integration (Strict Mode)

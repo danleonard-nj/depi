@@ -29,12 +29,26 @@ requires-python = ">=3.8"
 dependencies = []
 
 [project.optional-dependencies]
-web = ["flask"]
+fastapi = ["fastapi>=0.100,<0.110"]
+flask = ["flask>=2.3,<3.0"]
+quart = ["quart>=0.18,<0.20", "werkzeug<3"]
+django = ["django>=4.2,<5.0"]
+web = [
+    "fastapi>=0.100,<0.110",
+    "flask>=2.3,<3.0",
+    "quart>=0.18,<0.20",
+    "werkzeug<3",
+    "django>=4.2,<5.0",
+]
 dev = [
     "pytest",
     "pytest-cov",
     "pytest-benchmark",
     "pytest-asyncio",
+    "dependency-injector",
+    "psutil",
+    "build",
+    "twine",
     "black",
     "flake8",
     "mypy",

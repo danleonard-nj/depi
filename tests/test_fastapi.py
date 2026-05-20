@@ -305,8 +305,8 @@ def test_dependency_injector_partial_injection():
         scope.dispose()
 
 
-def test_dependency_injector_no_scope_error():
-    """Test that @inject decorator raises error when no scope is set"""
+def test_dependency_injector_without_scope_uses_provider():
+    """Test that @inject decorator falls back to provider when no scope is set."""
     # Setup depi container
     services = ServiceCollection()
     services.add_singleton(MyService)
@@ -320,8 +320,4 @@ def test_dependency_injector_no_scope_error():
     def requires_scope(my_service: MyService):
         return my_service.get_value()
 
-    # Should raise error when no scope is set
-    with pytest.raises(Exception) as exc_info:
-        requires_scope()
-
-    assert "No active ServiceScope" in str(exc_info.value)
+    assert requires_scope() == "fastapi ok"

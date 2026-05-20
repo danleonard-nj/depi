@@ -744,8 +744,47 @@ class DependencyInjector:
         for rule in app.url_map.iter_rules():
             endpoint = app.view_functions[rule.endpoint]
             if hasattr(endpoint, '_scope'):
-                @wraps(endpoint)
-                def wrapped_view(*args, **kwargs):
-                    endpoint._scope = g.scope
-                    return endpoint(*args, **kwargs)
-                app.view_functions[rule.endpoint] = wrapped_view
+                def _make_wrapped_view(view_func):
+                    @wraps(view_func)
+                    def wrapped_view(*args, **kwargs):
+                        view_func._scope = g.scope
+                        return view_func(*args, **kwargs)
+                    return wrapped_view
+
+                app.view_functions[rule.endpoint] = _make_wrapped_view(endpoint)
+
+    def setup_quart(self, app):
+        """
+        Install Quart hooks to manage a scope per request via quart.g.
+        """
+        from quart import g
+
+        @app.before_request
+        async def before_request():
+            g.scope = self.create_scope()
+
+        @app.teardown_request
+        async def teardown_request(exception=None):
+            if hasattr(g, 'scope'):
+                g.scope.dispose()
+
+        # Wrap each decorated view so it gets the current scope
+        for rule in app.url_map.iter_rules():
+            endpoint = app.view_functions[rule.endpoint]
+            if hasattr(endpoint, '_scope'):
+                def _make_wrapped_view(view_func):
+                    if asyncio.iscoroutinefunction(view_func):
+                        @wraps(view_func)
+                        async def wrapped_view(*args, **kwargs):
+                            view_func._scope = g.scope
+                            return await view_func(*args, **kwargs)
+                        return wrapped_view
+
+                    @wraps(view_func)
+                    def wrapped_view(*args, **kwargs):
+                        view_func._scope = g.scope
+                        return view_func(*args, **kwargs)
+
+                    return wrapped_view
+
+                app.view_functions[rule.endpoint] = _make_wrapped_view(endpoint)
