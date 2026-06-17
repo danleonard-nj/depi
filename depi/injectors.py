@@ -27,11 +27,13 @@ class BaseInjector(ABC):
         return self._provider.create_scope()
 
     def get_current_scope(self) -> 'ServiceScope':
-        """Get current scope (creates one if none exists)."""
+        """Return the scope bound to the current request/task context."""
         scope = _current_scope.get()
         if scope is None:
-            # Fallback: create a temporary scope
-            scope = self.create_scope()
+            raise RuntimeError(
+                f"{type(self).__name__}: no active DI scope. Ensure setup(app) ran "
+                f"and the request is handled inside the configured middleware."
+            )
         return scope
 
     @abstractmethod
@@ -104,21 +106,33 @@ class QuartInjector(BaseInjector):
 
 
 class FastAPIInjector(BaseInjector):
-    """FastAPI injector - uses Depends(get_provider)."""
+    """FastAPI injector — pure ASGI middleware so the scope contextvar reaches
+    Depends() and disposal happens after the response completes."""
 
     def setup(self, app):
-        """Set up FastAPI middleware for scope management."""
-        from fastapi import Request
+        provider = self._provider
 
-        @app.middleware("http")
-        async def di_middleware(request: Request, call_next):
-            with self.create_scope() as scope:
-                token = _current_scope.set(scope)
+        class _DIScopeMiddleware:
+            def __init__(self, asgi_app):
+                self.asgi_app = asgi_app
+
+            async def __call__(self, scope, receive, send):
+                if scope["type"] not in ("http", "websocket"):
+                    await self.asgi_app(scope, receive, send)
+                    return
+
+                di_scope = provider.create_scope()
+                token = _current_scope.set(di_scope)
                 try:
-                    response = await call_next(request)
-                    return response
+                    await self.asgi_app(scope, receive, send)
                 finally:
                     _current_scope.reset(token)
+                    if hasattr(di_scope, "__aexit__"):
+                        await di_scope.__aexit__(None, None, None)
+                    else:
+                        di_scope.dispose()
+
+        app.add_middleware(_DIScopeMiddleware)
 
     def get_provider(self) -> 'ServiceScope':
         """FastAPI dependency function - use with Depends(injector.get_provider)."""

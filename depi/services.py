@@ -506,12 +506,38 @@ class ServiceProvider:
             dfs(d)
         return order
 
+    def _detect_cycles(self) -> None:
+        """
+        DFS over the entire registration graph to catch cyclic dependencies for
+        every lifetime, not just singletons. Unregistered deps are skipped so
+        this remains a pure cycle check (they're caught at resolve time).
+        """
+        visiting: set = set()
+        visited: set = set()
+
+        def dfs(reg: DependencyRegistration):
+            if reg in visited:
+                return
+            if reg in visiting:
+                raise Exception(f"Cyclic dependency detected: {reg._type_name}")
+            visiting.add(reg)
+            for param in reg.constructor_params:
+                dep = self._dependency_lookup.get(param.dependency_type)
+                if dep is not None:
+                    dfs(dep)
+            visiting.discard(reg)
+            visited.add(reg)
+
+        for reg in self._dependencies:
+            dfs(reg)
+
     def build(self) -> 'ServiceProvider':
         """
         Instantiate all singletons in dependency order.
         """
         # Validate dependencies before building
         self._validate_dependencies()
+        self._detect_cycles()
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)
@@ -542,6 +568,7 @@ class ServiceProvider:
         """
         # Validate dependencies before building
         self._validate_dependencies()
+        self._detect_cycles()
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)

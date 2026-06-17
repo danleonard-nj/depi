@@ -17,6 +17,9 @@ from .injectors import (
     QuartInjector,
     FastAPIInjector,
     DependencyInjector,  # Backward compatibility
+    FastAPIDependencyInjector,  # Backward compatibility
+    FlaskDependencyInjector,  # Backward compatibility
+    QuartDependencyInjector,  # Backward compatibility
     create_fastapi_injector,
     create_flask_injector,
     create_quart_injector
@@ -42,4 +45,7 @@ __all__ = [
 
     # Legacy (deprecated)
     'DependencyInjector',
+    'FastAPIDependencyInjector',
+    'FlaskDependencyInjector',
+    'QuartDependencyInjector',
 ]
