@@ -481,39 +481,28 @@ class ServiceProvider:
                             f"scope isolation."
                         )
 
-    def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
+    def _walk_dependencies(
+        self,
+        roots: list[DependencyRegistration],
+        *,
+        strict: bool,
+        collect_order: bool,
+    ) -> Optional[list[DependencyRegistration]]:
         """
-        Perform DFS-based topological sort to detect cycles and order singletons.
-        """
-        visited = set()
-        visiting = set()
-        order: list[DependencyRegistration] = []
+        DFS over the dependency graph rooted at `roots`, raising on cycles.
 
-        def dfs(dep: DependencyRegistration):
-            if dep in visited:
-                return
-            if dep in visiting:
-                raise Exception(f"Cyclic dependency detected: {dep._type_name}")
-            visiting.add(dep)
-            for param in dep.constructor_params:
-                next_dep = self._get_registered_dependency(param.dependency_type, dep)
-                dfs(next_dep)
-            visiting.remove(dep)
-            visited.add(dep)
-            order.append(dep)
-
-        for d in dependencies:
-            dfs(d)
-        return order
-
-    def _detect_cycles(self) -> None:
+        strict=True   -> raise on an unregistered dependency, with the requesting
+                         type for context. Used for the singleton build pass, where a
+                         missing dependency is a hard build-time error.
+        strict=False  -> skip unregistered dependencies. Used for the whole-graph
+                         cycle check, where missing transient/scoped deps are left to
+                         surface at resolve time.
+        collect_order -> when True, return registrations in dependency-first order (a
+                         valid instantiation order); when False, return None.
         """
-        DFS over the entire registration graph to catch cyclic dependencies for
-        every lifetime, not just singletons. Unregistered deps are skipped so
-        this remains a pure cycle check (they're caught at resolve time).
-        """
-        visiting: set = set()
         visited: set = set()
+        visiting: set = set()
+        order: Optional[list] = [] if collect_order else None
 
         def dfs(reg: DependencyRegistration):
             if reg in visited:
@@ -522,14 +511,21 @@ class ServiceProvider:
                 raise Exception(f"Cyclic dependency detected: {reg._type_name}")
             visiting.add(reg)
             for param in reg.constructor_params:
-                dep = self._dependency_lookup.get(param.dependency_type)
-                if dep is not None:
-                    dfs(dep)
+                if strict:
+                    dep = self._get_registered_dependency(param.dependency_type, reg)
+                else:
+                    dep = self._dependency_lookup.get(param.dependency_type)
+                    if dep is None:
+                        continue
+                dfs(dep)
             visiting.discard(reg)
             visited.add(reg)
+            if order is not None:
+                order.append(reg)
 
-        for reg in self._dependencies:
+        for reg in roots:
             dfs(reg)
+        return order
 
     def build(self) -> 'ServiceProvider':
         """
@@ -537,10 +533,12 @@ class ServiceProvider:
         """
         # Validate dependencies before building
         self._validate_dependencies()
-        self._detect_cycles()
+        # whole-graph cycle check across every lifetime (lenient on missing deps)
+        self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        # strict ordered pass over the singletons we actually instantiate
+        sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
             if reg.instance is None:
                 if reg.factory:
@@ -568,10 +566,12 @@ class ServiceProvider:
         """
         # Validate dependencies before building
         self._validate_dependencies()
-        self._detect_cycles()
+        # whole-graph cycle check across every lifetime (lenient on missing deps)
+        self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        # strict ordered pass over the singletons we actually instantiate
+        sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
             if reg.instance is None:
                 if reg.factory:
