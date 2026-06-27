@@ -1,8 +1,12 @@
-# test_fastapi.py - Demonstrates both ServiceCollection and DependencyInjector patterns with FastAPI
 import pytest
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends
 from fastapi.testclient import TestClient
-from depi.services import ServiceCollection, DependencyInjector
+from depi import (
+    ServiceCollection,
+    ServiceProvider,
+    create_fastapi_injector,
+    FastAPIDependencyInjector
+)
 
 
 class MyService:
@@ -16,6 +20,17 @@ class DatabaseService:
 
     def get_data(self):
         return f"db: {self.my_service.get_value()}"
+
+
+class CacheService:
+    def __init__(self):
+        self.data = {}
+
+    def get(self, key: str):
+        return self.data.get(key, "cache miss")
+
+    def set(self, key: str, value: str):
+        self.data[key] = value
 
 
 def test_fastapi_manual_resolution():
@@ -45,81 +60,201 @@ def test_fastapi_manual_resolution():
     assert data["db_data"] == "db: fastapi ok"
 
 
-def test_fastapi_injector_decorator():
-    """Test automatic dependency injection using DependencyInjector with FastAPI"""
+def test_fastapi_pure_wrapper_injection():
+    """Test Strategy 1: Pure wrapper approach with new FastAPIDependencyInjector"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    services.add_scoped(CacheService)
+    provider = services.build_provider()
+
+    # Create FastAPI-specific injector
+    injector = create_fastapi_injector(provider, strict=True)
+    injector.setup_fastapi(app)
+
+    @app.get("/di/inject")
+    @injector.inject
+    async def di_view_injected(my_service: MyService, db_service: DatabaseService, cache: CacheService):
+        cache.set("test", "cached_value")
+        return {
+            "approach": "pure_wrapper",
+            "value": my_service.get_value(),
+            "db_data": db_service.get_data(),
+            "cache_data": cache.get("test")
+        }
+
+    @app.get("/di/mixed/{item_id}")
+    @injector.inject
+    async def mixed_params(item_id: int, name: str, my_service: MyService):
+        return {
+            "item_id": item_id,
+            "name": name,
+            "service_value": my_service.get_value()
+        }
+
+    client = TestClient(app)
+
+    # Test pure injection
+    response = client.get("/di/inject")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["approach"] == "pure_wrapper"
+    assert data["value"] == "fastapi ok"
+    assert data["db_data"] == "db: fastapi ok"
+    assert data["cache_data"] == "cached_value"
+
+    # Test mixed parameters (some injected, some from URL/query)
+    response = client.get("/di/mixed/123?name=test")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["item_id"] == 123
+    assert data["name"] == "test"
+    assert data["service_value"] == "fastapi ok"
+
+
+def test_fastapi_depends_injection():
+    """Test Strategy 2: FastAPI Depends() integration"""
     app = FastAPI()
     services = ServiceCollection()
     services.add_singleton(MyService)
     services.add_transient(DatabaseService)
     provider = services.build_provider()
 
-    injector = DependencyInjector(provider, strict=True)
-
-    # Setup FastAPI integration
+    injector = create_fastapi_injector(provider)
     injector.setup_fastapi(app)
 
-    @app.get("/di/injected")
-    @injector.inject
-    async def di_view_injected(my_service: MyService, db_service: DatabaseService):
+    @app.get("/di/depends")
+    @injector.depends_inject
+    async def depends_view(my_service: MyService, db_service: DatabaseService):
         return {
-            "approach": "injected",
+            "approach": "depends",
             "value": my_service.get_value(),
             "db_data": db_service.get_data()
         }
 
     client = TestClient(app)
-    response = client.get("/di/injected")
+    response = client.get("/di/depends")
     assert response.status_code == 200
     data = response.json()
-    assert data["approach"] == "injected"
+    assert data["approach"] == "depends"
     assert data["value"] == "fastapi ok"
     assert data["db_data"] == "db: fastapi ok"
 
 
-def test_fastapi_both_approaches():
-    """Test that both DI approaches work in the same FastAPI app"""
+def test_fastapi_manual_injection():
+    """Test Strategy 3: Manual parameter specification"""
     app = FastAPI()
     services = ServiceCollection()
     services.add_singleton(MyService)
     services.add_transient(DatabaseService)
     provider = services.build_provider()
 
-    injector = DependencyInjector(provider, strict=True)
+    injector = create_fastapi_injector(provider)
     injector.setup_fastapi(app)
 
-    # Manual approach
-    @app.get("/di/manual")
-    async def di_view_manual():
-        service = provider.resolve(MyService)
-        return {"approach": "manual", "value": service.get_value()}
+    @app.get("/di/manual_inject/{user_id}")
+    @injector.manual_inject(db=DatabaseService, service=MyService)
+    async def manual_inject_view(user_id: int, db, service):
+        return {
+            "approach": "manual_inject",
+            "user_id": user_id,
+            "value": service.get_value(),
+            "db_data": db.get_data()
+        }
 
-    # Injected approach
-    @app.get("/di/injected")
+    client = TestClient(app)
+    response = client.get("/di/manual_inject/42")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["approach"] == "manual_inject"
+    assert data["user_id"] == 42
+    assert data["value"] == "fastapi ok"
+    assert data["db_data"] == "db: fastapi ok"
+
+
+def test_fastapi_all_strategies_combined():
+    """Test that all three strategies work in the same FastAPI app"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_transient(DatabaseService)
+    services.add_scoped(CacheService)
+    provider = services.build_provider()
+
+    injector = create_fastapi_injector(provider, strict=True)
+    injector.setup_fastapi(app)
+
+    # Strategy 1: Pure wrapper
+    @app.get("/strategy1")
     @injector.inject
-    async def di_view_injected(my_service: MyService):
-        return {"approach": "injected", "value": my_service.get_value()}
+    async def strategy1(my_service: MyService):
+        return {"strategy": 1, "value": my_service.get_value()}
+
+    # Strategy 2: Depends
+    @app.get("/strategy2")
+    @injector.depends_inject
+    async def strategy2(my_service: MyService):
+        return {"strategy": 2, "value": my_service.get_value()}
+
+    # Strategy 3: Manual
+    @app.get("/strategy3")
+    @injector.manual_inject(service=MyService)
+    async def strategy3(service):
+        return {"strategy": 3, "value": service.get_value()}
+
+    # Manual resolution (no injection)
+    @app.get("/manual")
+    async def manual():
+        service = provider.resolve(MyService)
+        return {"strategy": "manual", "value": service.get_value()}
 
     client = TestClient(app)
 
-    # Test manual approach
-    manual_response = client.get("/di/manual")
-    assert manual_response.status_code == 200
-    manual_data = manual_response.json()
-    assert manual_data["approach"] == "manual"
-    assert manual_data["value"] == "fastapi ok"
-
-    # Test injected approach
-    injected_response = client.get("/di/injected")
-    assert injected_response.status_code == 200
-    injected_data = injected_response.json()
-    assert injected_data["approach"] == "injected"
-    assert injected_data["value"] == "fastapi ok"
-
-    # Verify they both work with the same service instance (singleton)
-    assert manual_data["value"] == injected_data["value"]
+    # Test all approaches
+    for endpoint in ["/strategy1", "/strategy2", "/strategy3", "/manual"]:
+        response = client.get(endpoint)
+        assert response.status_code == 200
+        data = response.json()
+        assert data["value"] == "fastapi ok"
 
 
-# Legacy tests for core functionality
+def test_fastapi_scoped_lifetimes():
+    """Test that scoped services work correctly across requests"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    services.add_scoped(CacheService)
+    provider = services.build_provider()
+
+    injector = create_fastapi_injector(provider)
+    injector.setup_fastapi(app)
+
+    @app.post("/cache/set")
+    @injector.inject
+    async def set_cache(key: str, value: str, cache: CacheService):
+        cache.set(key, value)
+        return {"status": "set", "key": key, "value": value}
+
+    @app.get("/cache/get")
+    @injector.inject
+    async def get_cache(key: str, cache: CacheService):
+        return {"key": key, "value": cache.get(key)}
+
+    client = TestClient(app)
+
+    # Set a value in one request
+    response1 = client.post("/cache/set?key=test&value=hello")
+    assert response1.status_code == 200
+
+    # Try to get it in another request (should be cache miss due to scoped lifetime)
+    response2 = client.get("/cache/get?key=test")
+    assert response2.status_code == 200
+    data = response2.json()
+    assert data["value"] == "cache miss"  # Different scope, so cache is empty
+
+
+# Core functionality tests
 def test_fastapi_singleton_resolution():
     """Test that depi properly resolves singleton services"""
     services = ServiceCollection()
@@ -146,182 +281,109 @@ def test_fastapi_dependency_injection():
 
     assert isinstance(db_service.my_service, MyService)
     assert db_service.get_data() == "db: fastapi ok"
-    service = provider.resolve(MyService)
-    return {"value": service.get_value()}
 
-    @app.get("/database")
-    def get_database_data():
-        db_service = provider.resolve(DatabaseService)
-        return {"data": db_service.get_data()}
 
-    # Test the app
+def test_fastapi_error_handling():
+    """Test error handling with strict mode"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    # Intentionally don't register DatabaseService
+    provider = services.build_provider()
+
+    injector = create_fastapi_injector(provider, strict=True)
+    injector.setup_fastapi(app)
+
+    # This should fail because DatabaseService is not registered
+    with pytest.raises(ValueError) as exc_info:
+        @injector.inject
+        async def failing_view(my_service: MyService, db_service: DatabaseService):
+            return {"value": my_service.get_value()}
+
+    assert "dependency is not registered" in str(exc_info.value)
+
+
+def test_fastapi_non_strict_mode():
+    """Test non-strict mode ignores unregistered dependencies"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    # Don't register DatabaseService
+    provider = services.build_provider()
+
+    injector = create_fastapi_injector(provider, strict=False)
+    injector.setup_fastapi(app)
+
+    @app.get("/non-strict")
+    @injector.inject
+    async def non_strict_view(my_service: MyService, unregistered_param: str = "default"):
+        return {
+            "value": my_service.get_value(),
+            "unregistered": unregistered_param
+        }
+
     client = TestClient(app)
-
-    response = client.get("/service")
+    response = client.get("/non-strict")
     assert response.status_code == 200
-    assert response.json()["value"] == "fastapi ok"
+    data = response.json()
+    assert data["value"] == "fastapi ok"
+    assert data["unregistered"] == "default"
 
-    response = client.get("/database")
+
+def test_fastapi_signature_modification():
+    """Test that FastAPI sees the modified signatures correctly"""
+    app = FastAPI()
+    services = ServiceCollection()
+    services.add_singleton(MyService)
+    provider = services.build_provider()
+
+    injector = create_fastapi_injector(provider)
+    injector.setup_fastapi(app)
+
+    @app.get("/signature-test/{item_id}")
+    @injector.inject
+    async def signature_test(item_id: int, name: str, my_service: MyService):
+        return {
+            "item_id": item_id,
+            "name": name,
+            "service_value": my_service.get_value()
+        }
+
+    # Check that the wrapped function has the correct signature for FastAPI
+    import inspect
+    sig = inspect.signature(signature_test)
+    param_names = list(sig.parameters.keys())
+
+    # Should only see non-injectable parameters
+    assert "item_id" in param_names
+    assert "name" in param_names
+    assert "my_service" not in param_names  # This should be injected and hidden from FastAPI
+
+    client = TestClient(app)
+    response = client.get("/signature-test/123?name=test")
     assert response.status_code == 200
-    assert response.json()["data"] == "db: fastapi ok"
+    data = response.json()
+    assert data["item_id"] == 123
+    assert data["name"] == "test"
+    assert data["service_value"] == "fastapi ok"
 
 
-def test_dependency_injector_decorator():
-    """Test the @injector.inject decorator with manual scope management"""
-    # Setup depi container
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_transient(DatabaseService)
-    provider = services.build_provider()
-
-    # Create dependency injector
-    injector = DependencyInjector(provider)
-
-    # Function using @inject decorator
-    @injector.inject
-    def process_data(my_service: MyService, db_service: DatabaseService):
-        return {
-            "service_value": my_service.get_value(),
-            "db_data": db_service.get_data()
-        }
-
-    # Manually set scope (normally done by middleware)
-    scope = injector.create_scope()
-    process_data._scope = scope
-
-    try:
-        result = process_data()
-        assert result["service_value"] == "fastapi ok"
-        assert result["db_data"] == "db: fastapi ok"
-    finally:
-        scope.dispose()
-
-
-def test_dependency_injector_async_decorator():
-    """Test the @injector.inject decorator with async functions"""
-    # Setup depi container
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_transient(DatabaseService)
-    provider = services.build_provider()
-
-    # Create dependency injector
-    injector = DependencyInjector(provider)
-
-    # Async function using @inject decorator
-    @injector.inject
-    async def async_process_data(my_service: MyService, db_service: DatabaseService):
-        return {
-            "service_value": my_service.get_value(),
-            "db_data": db_service.get_data()
-        }
-
-    # Test async function
-    import asyncio
-
-    async def run_test():
-        scope = injector.create_scope()
-        async_process_data._scope = scope
-
-        try:
-            result = await async_process_data()
-            assert result["service_value"] == "fastapi ok"
-            assert result["db_data"] == "db: fastapi ok"
-        finally:
-            scope.dispose()
-
-    asyncio.run(run_test())
-
-
-def test_dependency_injector_with_fastapi_middleware():
-    """Test the @injector.inject decorator basic functionality (without full FastAPI integration)"""
-    # Setup depi container
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    services.add_transient(DatabaseService)
-    provider = services.build_provider()
-
-    # Create dependency injector
-    injector = DependencyInjector(provider)
-
-    # Test the inject decorator directly without FastAPI route registration
-    @injector.inject
-    async def get_injected_data(my_service: MyService, db_service: DatabaseService):
-        return {
-            "service_value": my_service.get_value(),
-            "db_data": db_service.get_data()
-        }
-
-    # Test async function with manual scope management
-    import asyncio
-
-    async def run_test():
-        scope = injector.create_scope()
-        get_injected_data._scope = scope
-
-        try:
-            result = await get_injected_data()
-            assert result["service_value"] == "fastapi ok"
-            assert result["db_data"] == "db: fastapi ok"
-        finally:
-            scope.dispose()
-
-    asyncio.run(run_test())
-
-
-def test_dependency_injector_partial_injection():
-    """Test @inject decorator with mixed injected and manual parameters"""
-    # Setup depi container
+def test_direct_injector_creation():
+    """Test creating injector directly vs factory function"""
     services = ServiceCollection()
     services.add_singleton(MyService)
     provider = services.build_provider()
 
-    # Create dependency injector
-    injector = DependencyInjector(provider)
+    # Test factory function
+    injector1 = create_fastapi_injector(provider, strict=True)
+    assert isinstance(injector1, FastAPIDependencyInjector)
+    assert injector1._strict == True
 
-    # Function with mixed parameters
-    @injector.inject
-    def mixed_parameters(manual_param: str, my_service: MyService, another_manual: int = 42):
-        return {
-            "manual": manual_param,
-            "injected": my_service.get_value(),
-            "default": another_manual
-        }
+    # Test direct instantiation
+    injector2 = FastAPIDependencyInjector(provider, strict=False)
+    assert isinstance(injector2, FastAPIDependencyInjector)
+    assert injector2._strict == False
 
-    # Manually set scope
-    scope = injector.create_scope()
-    mixed_parameters._scope = scope
-
-    try:
-        result = mixed_parameters("test_value")
-        assert result["manual"] == "test_value"
-        assert result["injected"] == "fastapi ok"
-        assert result["default"] == 42
-
-        # Test with override
-        result2 = mixed_parameters("test_value", another_manual=100)
-        assert result2["default"] == 100
-    finally:
-        scope.dispose()
-
-
-def test_dependency_injector_no_scope_error():
-    """Test that @inject decorator raises error when no scope is set"""
-    # Setup depi container
-    services = ServiceCollection()
-    services.add_singleton(MyService)
-    provider = services.build_provider()
-
-    # Create dependency injector
-    injector = DependencyInjector(provider)
-
-    # Function using @inject decorator
-    @injector.inject
-    def requires_scope(my_service: MyService):
-        return my_service.get_value()
-
-    # Should raise error when no scope is set
-    with pytest.raises(Exception) as exc_info:
-        requires_scope()
-
-    assert "No active ServiceScope" in str(exc_info.value)
+    # Both should work the same way
+    assert injector1._provider is provider
+    assert injector2._provider is provider

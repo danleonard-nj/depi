@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=None)
 def get_signature(fn):
-    return inspect.signature(fn)
+    return inspect.signature(fn, eval_str=True)
 
 
 class Lifetime:
@@ -41,6 +41,8 @@ class ConstructorDependency:
         name:        Name of the parameter in the constructor.
         dependency_type: The type annotation required.
     """
+
+    __slots__ = ("name", "dependency_type")
 
     def __init__(self, name: str, _type: type):
         self.name = name
@@ -78,7 +80,8 @@ class DependencyRegistration:
         implementation_type: Optional[type] = None,
         instance: Any = None,
         factory: Callable[['DependencyRegistration'], Any] = None,
-        constructor_params: list[ConstructorDependency] = None
+        constructor_params: list[ConstructorDependency] = None,
+        resolver_fn: Optional[Callable] = None
     ):
         self.dependency_type = dependency_type
         self.lifetime = lifetime
@@ -87,6 +90,7 @@ class DependencyRegistration:
         self.factory = factory
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
+        self._resolver_fn = resolver_fn
 
     def activate(
         self,
@@ -123,7 +127,7 @@ class ServiceCollection:
     Collects service registrations before building a ServiceProvider.
     """
 
-    __slots__ = ("name", "dependency_type", "_container")
+    __slots__ = ("_container",)
 
     def __init__(self):
         self._container: dict[type, DependencyRegistration] = {}
@@ -201,7 +205,11 @@ class ServiceCollection:
         Bulk-register multiple types with the same lifetime.
         """
         for t in types:
-            getattr(self, f"add_{lifetime.lower()}")(t)
+            self._register_dependency(
+                dependency_type=t,
+                implementation_type=None,
+                lifetime=lifetime
+            )
 
     def _register_dependency(
         self,
@@ -231,9 +239,9 @@ class ServiceCollection:
             dependency_type=dependency_type,
             implementation_type=impl,
             constructor_params=constructor_params,
+            resolver_fn=resolver_fn,
             **kwargs
         )
-        reg._resolver_fn = resolver_fn
         self._container[dependency_type] = reg
 
     def get_container(self) -> dict[type, DependencyRegistration]:
@@ -405,6 +413,44 @@ class ServiceProvider:
             )
         raise Exception(f"Failed to locate registration for '{implementation_type.__name__}'")
 
+    def _validate_dependencies(self) -> None:
+        """
+        Validate dependency lifetimes to prevent invalid lifetime combinations.
+
+        Rules:
+        - Singletons cannot depend on transient services (only a single instance
+          of the transient dependency would be injected during instantiation of the
+          singleton, which is not the intended behavior of a transient dependency)
+        - Singletons cannot depend on scoped services (the scoped instance would be
+          resolved once during singleton creation and reused, breaking scope isolation)
+        """
+        for reg in self._dependencies:
+            if reg.lifetime == Lifetime.Singleton:
+                # Only validate constructor-injected dependencies (not factory-based)
+                # Factory-based registrations don't have constructor_params
+                if not reg.constructor_params:
+                    continue
+
+                for param in reg.constructor_params:
+                    dep_reg = self._dependency_lookup.get(param.dependency_type)
+                    if dep_reg is None:
+                        continue  # Missing dependency will be caught elsewhere
+
+                    if dep_reg.lifetime == Lifetime.Transient:
+                        raise Exception(
+                            f"Singleton '{reg._type_name}' cannot depend on transient "
+                            f"'{dep_reg._type_name}'. Transient dependencies would only "
+                            f"be instantiated once during singleton creation, which is "
+                            f"not the intended behavior of a transient service."
+                        )
+                    if dep_reg.lifetime == Lifetime.Scoped:
+                        raise Exception(
+                            f"Singleton '{reg._type_name}' cannot depend on scoped "
+                            f"'{dep_reg._type_name}'. Scoped dependencies would only "
+                            f"be instantiated once during singleton creation, breaking "
+                            f"scope isolation."
+                        )
+
     def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
         """
         Perform DFS-based topological sort to detect cycles and order singletons.
@@ -434,6 +480,9 @@ class ServiceProvider:
         """
         Instantiate all singletons in dependency order.
         """
+        # Validate dependencies before building
+        self._validate_dependencies()
+
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
@@ -461,6 +510,9 @@ class ServiceProvider:
         """
         Async variant of build(), awaiting any coroutine constructors or factories.
         """
+        # Validate dependencies before building
+        self._validate_dependencies()
+
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
         sorted_deps = self._topological_sort(to_build)
         for reg in sorted_deps:
@@ -521,13 +573,13 @@ class ServiceScope:
         life = reg.lifetime
 
         # Singleton always via root provider
-        if life is Lifetime.Singleton:
+        if life == Lifetime.Singleton:
             return provider.resolve(_type)
 
         insts = self._scoped_instances
 
         # Scoped: return cached if present
-        if life is Lifetime.Scoped:
+        if life == Lifetime.Scoped:
             inst = insts.get(_type)
             if inst is not None:
                 return inst
@@ -593,159 +645,3 @@ class ServiceScope:
 
         self._scoped_instances.clear()
         self._cache.clear()
-
-
-class DependencyInjector:
-    """
-    Decorator and middleware helper for auto-injecting dependencies
-    into function parameters based on type annotations.
-    """
-
-    def __init__(self, provider: ServiceProvider, strict: bool = False):
-        self._provider = provider
-        self._strict = strict
-
-    def create_scope(self) -> ServiceScope:
-        """Expose ability to create a manual scope."""
-        return self._provider.create_scope()
-
-    def inject(self, fn: Callable) -> Callable:
-        """
-        Decorator for functions (sync or async). Fills annotated params
-        from the active scope (attached via middleware).
-        In strict mode, attempts to inject all annotated parameters.
-        In non-strict mode, only injects parameters that are registered.
-        """
-        sig = get_signature(fn)
-        is_async = asyncio.iscoroutinefunction(fn)
-
-        # Create a new signature removing injectable parameters for FastAPI compatibility
-        new_params = []
-        injectable_params = {}
-
-        for name, param in sig.parameters.items():
-            # Check if this parameter should be injected
-            if param.annotation != inspect.Parameter.empty:
-                if self._strict:
-                    # In strict mode, verify all annotated parameters are registered
-                    if param.annotation not in self._provider._dependency_lookup:
-                        raise ValueError(
-                            f"Failed to resolve dependency '{param.annotation.__name__}' "
-                            f"for parameter '{name}': dependency is not registered"
-                        )
-                    injectable_params[name] = param.annotation
-                else:
-                    # In non-strict mode, only inject registered parameters
-                    if param.annotation in self._provider._dependency_lookup:
-                        injectable_params[name] = param.annotation
-                    else:
-                        # Keep non-injectable parameters in the signature
-                        new_params.append(param)
-            else:
-                # Keep non-annotated parameters in the signature
-                new_params.append(param)
-
-        # Create new signature without injectable parameters
-        new_sig = sig.replace(parameters=new_params)
-
-        if is_async:
-            @wraps(fn)
-            async def async_wrapper(*args, **kwargs):
-                # Use scope if available, otherwise fall back to provider
-                if hasattr(async_wrapper, '_scope') and async_wrapper._scope is not None:
-                    resolver = async_wrapper._scope
-                    resolve_method = resolver.resolve_async
-                else:
-                    resolver = self._provider
-                    resolve_method = resolver.resolve_async
-
-                # Inject dependencies
-                for name, param_type in injectable_params.items():
-                    if name not in kwargs:  # Don't override if already provided
-                        try:
-                            kwargs[name] = await resolve_method(param_type)
-                        except Exception as e:
-                            if self._strict:
-                                raise ValueError(
-                                    f"Failed to resolve dependency '{param_type.__name__}' "
-                                    f"for '{name}': {e}"
-                                )
-                            logger.debug(f"Skipping DI for '{name}': {e}")
-
-                return await fn(*args, **kwargs)
-
-            # Set the new signature so FastAPI sees the clean version
-            async_wrapper.__signature__ = new_sig
-            async_wrapper._scope = None
-            return async_wrapper
-        else:
-            @wraps(fn)
-            def sync_wrapper(*args, **kwargs):
-                # Use scope if available, otherwise fall back to provider
-                if hasattr(sync_wrapper, '_scope') and sync_wrapper._scope is not None:
-                    resolver = sync_wrapper._scope
-                else:
-                    resolver = self._provider
-
-                # Inject dependencies
-                for name, param_type in injectable_params.items():
-                    if name not in kwargs:  # Don't override if already provided
-                        try:
-                            kwargs[name] = resolver.resolve(param_type)
-                        except Exception as e:
-                            if self._strict:
-                                raise ValueError(
-                                    f"Failed to resolve dependency '{param_type.__name__}' "
-                                    f"for '{name}': {e}"
-                                )
-                            logger.debug(f"Skipping DI for '{name}': {e}")
-
-                return fn(*args, **kwargs)
-
-            # Set the new signature so FastAPI sees the clean version
-            sync_wrapper.__signature__ = new_sig
-            sync_wrapper._scope = None
-            return sync_wrapper
-
-    # TODO: Quart, Django, Flask, FastAPI integration helpers will ultimately be migrated to separate packages
-    def setup_fastapi(self, app):
-        """
-        Install FastAPI middleware to create a new scope per request,
-        attach it to request.state.scope, and wire decorated endpoints.
-        """
-        from fastapi import Request
-
-        @app.middleware("http")
-        async def di_middleware(request: Request, call_next):
-            with self.create_scope() as scope:
-                request.state.scope = scope
-                # Attach scope to all @inject endpoints
-                for route in app.routes:
-                    if hasattr(route.endpoint, '_scope'):
-                        route.endpoint._scope = scope
-                return await call_next(request)
-
-    def setup_flask(self, app):
-        """
-        Install Flask hooks to manage a scope per request via flask.g.
-        """
-        from flask import g
-
-        @app.before_request
-        def before_request():
-            g.scope = self.create_scope()
-
-        @app.teardown_request
-        def teardown_request(exception=None):
-            if hasattr(g, 'scope'):
-                g.scope.dispose()
-
-        # Wrap each decorated view so it gets the current scope
-        for rule in app.url_map.iter_rules():
-            endpoint = app.view_functions[rule.endpoint]
-            if hasattr(endpoint, '_scope'):
-                @wraps(endpoint)
-                def wrapped_view(*args, **kwargs):
-                    endpoint._scope = g.scope
-                    return endpoint(*args, **kwargs)
-                app.view_functions[rule.endpoint] = wrapped_view
