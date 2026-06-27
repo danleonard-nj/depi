@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 @lru_cache(maxsize=None)
 def get_signature(fn):
-    return inspect.signature(fn)
+    return inspect.signature(fn, eval_str=True)
 
 
 class Lifetime:
