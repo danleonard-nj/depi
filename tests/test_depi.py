@@ -3322,6 +3322,278 @@ class TestEdgeCasesAndCornerCases(unittest.TestCase):
         self.assertEqual(len(scope._scoped_instances), 0)
 
 
+class TestDeadlockFixes(unittest.TestCase):
+    """
+    Focused regression tests for the nested-singleton deadlock fix.
+
+    Root cause: ServiceProvider._cache_lock was a non-reentrant threading.Lock.
+    While constructing singleton A, resolve(B) tried to acquire the same lock on
+    the same thread → permanent deadlock.
+
+    Fix: replaced with threading.RLock so the same thread can re-enter during
+    recursive constructor dependency resolution.
+
+    Async counterpart: replaced a single asyncio.Lock (which would deadlock when
+    singleton A's constructor awaits resolve_async(B)) with a per-type asyncio.Lock
+    so independent singletons can be built concurrently.
+    """
+
+    def _make_lazy_provider(self, setup_fn):
+        """Create a ServiceProvider without pre-building singletons (lazy resolution)."""
+        coll = ServiceCollection()
+        setup_fn(coll)
+        # Deliberately skip build() so singletons are created lazily on first resolve().
+        # This is the path that previously deadlocked.
+        return ServiceProvider(coll)
+
+    def _run_async(self, coro):
+        return asyncio.run(coro)
+
+    # ── Synchronous deadlock tests ─────────────────────────────────────────────
+
+    def test_sync_singleton_a_depends_on_b_no_deadlock(self):
+        """
+        Singleton A synchronously depends on singleton B.
+        With threading.Lock this permanently deadlocks; with RLock it must complete.
+        """
+        class B:
+            pass
+
+        class A:
+            def __init__(self, b: B):
+                self.b = b
+
+        provider = self._make_lazy_provider(lambda c: (
+            c.add_singleton(B),
+            c.add_singleton(A),
+        ))
+
+        result = provider.resolve(A)
+        self.assertIsInstance(result, A)
+        self.assertIsInstance(result.b, B)
+
+    def test_sync_nested_abc_no_deadlock(self):
+        """
+        Singleton A → B → C: three-level nested lazy resolution must not deadlock.
+        """
+        class C:
+            pass
+
+        class B:
+            def __init__(self, c: C):
+                self.c = c
+
+        class A:
+            def __init__(self, b: B):
+                self.b = b
+
+        provider = self._make_lazy_provider(lambda c: (
+            c.add_singleton(C),
+            c.add_singleton(B),
+            c.add_singleton(A),
+        ))
+
+        result = provider.resolve(A)
+        self.assertIsInstance(result.b, B)
+        self.assertIsInstance(result.b.c, C)
+
+    def test_sync_repeated_resolution_returns_same_instance(self):
+        """Repeated synchronous resolution of a singleton returns the identical object."""
+        class Svc:
+            pass
+
+        provider = self._make_lazy_provider(lambda c: c.add_singleton(Svc))
+        a = provider.resolve(Svc)
+        b = provider.resolve(Svc)
+        c = provider.resolve(Svc)
+        self.assertIs(a, b)
+        self.assertIs(b, c)
+
+    # ── Asynchronous singleton tests ───────────────────────────────────────────
+
+    def test_async_concurrent_same_type_creates_one_instance(self):
+        """
+        Many coroutines concurrently resolving the same singleton type must
+        create exactly one instance (per-type asyncio.Lock prevents duplicates).
+        """
+        instances_created = []
+
+        class SlowSvc:
+            def __init__(self):
+                instances_created.append(self)
+
+        async def run():
+            coll = ServiceCollection()
+            coll.add_singleton(SlowSvc)
+            provider = ServiceProvider(coll)  # no pre-build (lazy)
+            tasks = [provider.resolve_async(SlowSvc) for _ in range(20)]
+            return await asyncio.gather(*tasks)
+
+        results = self._run_async(run())
+        # All resolutions return the identical cached instance.
+        self.assertEqual(len(set(id(r) for r in results)), 1)
+        # Constructor ran exactly once.
+        self.assertEqual(len(instances_created), 1)
+
+    def test_async_concurrent_different_types_not_serialized(self):
+        """
+        Concurrent async resolution of different singleton types should not
+        block each other (per-type locks, not a single global lock).
+        """
+        class SvcX:
+            pass
+
+        class SvcY:
+            pass
+
+        async def run():
+            coll = ServiceCollection()
+            coll.add_singleton(SvcX)
+            coll.add_singleton(SvcY)
+            provider = ServiceProvider(coll)  # lazy
+            # Both should resolve without blocking each other.
+            return await asyncio.gather(
+                provider.resolve_async(SvcX),
+                provider.resolve_async(SvcY),
+            )
+
+        x, y = self._run_async(run())
+        self.assertIsInstance(x, SvcX)
+        self.assertIsInstance(y, SvcY)
+
+    def test_async_singleton_a_depends_on_b_no_deadlock(self):
+        """
+        Async singleton A's constructor awaits singleton B.
+        Per-type locks must prevent deadlock (a single global async lock would
+        deadlock here because acquiring A's lock and then trying to acquire the
+        same global lock for B would block forever in the same coroutine chain).
+        """
+        class B:
+            pass
+
+        class A:
+            def __init__(self, b: B):
+                self.b = b
+
+        async def run():
+            coll = ServiceCollection()
+            coll.add_singleton(B)
+            coll.add_singleton(A)
+            provider = ServiceProvider(coll)  # lazy
+            return await provider.resolve_async(A)
+
+        result = self._run_async(run())
+        self.assertIsInstance(result, A)
+        self.assertIsInstance(result.b, B)
+
+    # ── Factory tests ──────────────────────────────────────────────────────────
+
+    def test_sync_factory_resolves_correctly(self):
+        """A synchronous factory continues to work correctly through resolve()."""
+        created = []
+
+        def my_factory(provider):
+            svc = SampleService()
+            created.append(svc)
+            return svc
+
+        coll = ServiceCollection()
+        coll.add_singleton(SampleService, factory=my_factory)
+        provider = coll.build_provider()
+
+        result = provider.resolve(SampleService)
+        self.assertIsInstance(result, SampleService)
+        self.assertEqual(len(created), 1)
+        self.assertIs(result, created[0])
+
+    def test_async_factory_resolves_via_resolve_async(self):
+        """An async factory works correctly through resolve_async()."""
+        async def my_async_factory(provider):
+            await asyncio.sleep(0)
+            return SampleService()
+
+        async def run():
+            coll = ServiceCollection()
+            coll.add_singleton(SampleService, factory=my_async_factory)
+            provider = ServiceProvider(coll)  # lazy (no pre-build)
+            return await provider.resolve_async(SampleService)
+
+        result = self._run_async(run())
+        self.assertIsInstance(result, SampleService)
+
+    def test_sync_resolve_of_async_factory_raises_clear_error(self):
+        """
+        Calling resolve() (sync) when the factory returns an awaitable must
+        raise a RuntimeError directing the caller to use resolve_async().
+        """
+        async def my_async_factory(provider):
+            return SampleService()
+
+        coll = ServiceCollection()
+        coll.add_singleton(SampleService, factory=my_async_factory)
+        # Use lazy provider so the factory is NOT run during build().
+        provider = ServiceProvider(coll)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            provider.resolve(SampleService)
+
+        self.assertIn("resolve_async", str(ctx.exception))
+
+    # ── Eager-build singleton caching ──────────────────────────────────────────
+
+    def test_eager_build_caches_returned_instance(self):
+        """
+        build() must store the value returned by activate() in the singleton
+        cache, not None (regression guard: activate() returns the instance but
+        does not assign registration.instance itself).
+        """
+        class EagerSvc:
+            pass
+
+        coll = ServiceCollection()
+        coll.add_singleton(EagerSvc)
+        provider = coll.build_provider()  # calls build() eagerly
+
+        resolved = provider.resolve(EagerSvc)
+        self.assertIsNotNone(resolved)
+        self.assertIsInstance(resolved, EagerSvc)
+        # Confirm the cache entry is non-None.
+        self.assertIsNotNone(provider._singleton_instances.get(EagerSvc))
+
+    # ── Lifetime regression tests ──────────────────────────────────────────────
+
+    def test_transient_still_creates_new_instance_each_time(self):
+        """Transient behavior is unchanged by the deadlock fix."""
+        class TSvc:
+            pass
+
+        coll = ServiceCollection()
+        coll.add_transient(TSvc)
+        provider = coll.build_provider()
+
+        a = provider.resolve(TSvc)
+        b = provider.resolve(TSvc)
+        self.assertIsNot(a, b)
+
+    def test_scoped_behavior_unchanged(self):
+        """Scoped behavior is unchanged by the deadlock fix."""
+        class SSvc:
+            pass
+
+        coll = ServiceCollection()
+        coll.add_scoped(SSvc)
+        provider = coll.build_provider()
+
+        with provider.create_scope() as scope1:
+            x = scope1.resolve(SSvc)
+            y = scope1.resolve(SSvc)
+            self.assertIs(x, y)
+
+        with provider.create_scope() as scope2:
+            z = scope2.resolve(SSvc)
+            self.assertIsNot(x, z)
+
+
 if __name__ == "__main__":
     # Configure logging for test run
     logging.basicConfig(
