@@ -60,10 +60,12 @@ class DependencyRegistration:
         instance:            Stored instance for singletons.
         factory:             Optional callable(provider) → instance.
         constructor_params:  List of ConstructorDependency for auto-injection.
+        eager:               If True, singleton is constructed during build()/build_async()
+                              instead of lazily on first resolve().
     """
     __slots__ = (
         "dependency_type", "implementation_type", "lifetime", "instance", "factory",
-        "constructor_params", "_type_name", "_resolver_fn"
+        "constructor_params", "_type_name", "_resolver_fn", "eager"
     )
 
     def __hash__(self):
@@ -81,7 +83,8 @@ class DependencyRegistration:
         instance: Any = None,
         factory: Callable[['DependencyRegistration'], Any] = None,
         constructor_params: list[ConstructorDependency] = None,
-        resolver_fn: Optional[Callable] = None
+        resolver_fn: Optional[Callable] = None,
+        eager: bool = False
     ):
         self.dependency_type = dependency_type
         self.lifetime = lifetime
@@ -91,6 +94,7 @@ class DependencyRegistration:
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
         self._resolver_fn = resolver_fn
+        self.eager = eager
 
     def activate(
         self,
@@ -161,15 +165,23 @@ class ServiceCollection:
         dependency_type: type,
         implementation_type: Optional[type] = None,
         instance: Any = None,
-        factory: Callable = None
+        factory: Callable = None,
+        eager: bool = False
     ) -> None:
-        """Register a singleton service."""
+        """
+        Register a singleton service.
+
+        By default, singletons are constructed lazily on first resolve().
+        Pass eager=True to have the singleton constructed during
+        build_provider()/build()/build_async() instead.
+        """
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
             lifetime=Lifetime.Singleton,
             instance=instance,
-            factory=factory
+            factory=factory,
+            eager=eager
         )
 
     def add_transient(
@@ -248,12 +260,17 @@ class ServiceCollection:
         """Expose raw registration dictionary."""
         return self._container
 
-    def build_provider(self) -> 'ServiceProvider':
+    def build_provider(self, eager_all: bool = False) -> 'ServiceProvider':
         """
         Finalize registrations and return a built ServiceProvider.
+
+        By default, only singletons registered with a factory or with
+        eager=True are constructed during build; other singletons are
+        constructed lazily on first resolve(). Pass eager_all=True to
+        restore the old behavior of eagerly constructing every singleton.
         """
         provider = ServiceProvider(self)
-        provider.build()
+        provider.build(eager_all=eager_all)
         return provider
 
 
@@ -527,9 +544,13 @@ class ServiceProvider:
             dfs(reg)
         return order
 
-    def build(self) -> 'ServiceProvider':
+    def build(self, eager_all: bool = False) -> 'ServiceProvider':
         """
-        Instantiate all singletons in dependency order.
+        Validate and order all singleton registrations, constructing only
+        those that require it up front: registrations with a factory, or
+        registrations marked eager=True. Other singletons remain lazy and
+        are constructed on first resolve(). Pass eager_all=True to
+        construct every singleton during build (old eager-all behavior).
         """
         # Validate dependencies before building
         self._validate_dependencies()
@@ -537,10 +558,11 @@ class ServiceProvider:
         self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        # strict ordered pass over the singletons we actually instantiate
+        # strict ordered pass over all singletons, to validate the graph and
+        # determine a valid instantiation order for the ones we do construct
         sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
-            if reg.instance is None:
+            if reg.instance is None and (eager_all or reg.factory or reg.eager):
                 if reg.factory:
                     inst = reg.factory(self)
                     # support coroutine factories
@@ -560,7 +582,7 @@ class ServiceProvider:
                     self._singleton_instances[reg.dependency_type] = inst
         return self
 
-    async def build_async(self) -> 'ServiceProvider':
+    async def build_async(self, eager_all: bool = False) -> 'ServiceProvider':
         """
         Async variant of build(), awaiting any coroutine constructors or factories.
         """
@@ -570,10 +592,11 @@ class ServiceProvider:
         self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        # strict ordered pass over the singletons we actually instantiate
+        # strict ordered pass over all singletons, to validate the graph and
+        # determine a valid instantiation order for the ones we do construct
         sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
-            if reg.instance is None:
+            if reg.instance is None and (eager_all or reg.factory or reg.eager):
                 if reg.factory:
                     inst = reg.factory(self)
                     if asyncio.iscoroutine(inst):

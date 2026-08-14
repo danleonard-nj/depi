@@ -438,6 +438,24 @@ def test_order_processing():
 
 Scoped lifetimes automatically clean up resources when the scope ends, preventing memory leaks in long-running applications.
 
+### Lazy vs. Eager Singletons
+
+By default, singletons registered with `add_singleton()` are constructed lazily: `build_provider()` validates the
+dependency graph and determines a valid construction order, but doesn't instantiate a plain (constructor-based)
+singleton until it is first resolved. Singletons registered with a `factory` continue to be constructed during
+`build_provider()`, since factories are typically used to set up shared resources up front.
+
+```python
+services.add_singleton(Foo)              # constructed lazily on first provider.resolve(Foo)
+services.add_singleton(Bar, eager=True)  # constructed during build_provider()
+```
+
+To restore the previous behavior of eagerly constructing every singleton during build, pass `eager_all=True`:
+
+```python
+provider = services.build_provider(eager_all=True)
+```
+
 ## Performance Considerations
 
 Resolution time scales O(n) with dependency depth, maintaining consistent performance even with complex enterprise architectures. For optimal performance with intricate dependency graphs:

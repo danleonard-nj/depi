@@ -672,17 +672,17 @@ class TestDependencyInjection(unittest.TestCase):
     # NEW TESTS START HERE
 
     def test_singleton_initialization_order(self):
-        """Test that singletons are initialized in correct dependency order"""
+        """Test that eager singletons are initialized in correct dependency order"""
         ExpensiveService.creation_count = 0
 
         coll = ServiceCollection()
-        coll.add_singleton(Configuration)
-        coll.add_singleton(EmailService)  # Depends on Configuration
-        coll.add_singleton(ExpensiveService)  # No dependencies
+        coll.add_singleton(Configuration, eager=True)
+        coll.add_singleton(EmailService, eager=True)  # Depends on Configuration
+        coll.add_singleton(ExpensiveService, eager=True)  # No dependencies
 
         prov = coll.build_provider()
 
-        # All singletons should be created during build
+        # Eager singletons should already be constructed by build_provider()
         email = prov.resolve(EmailService)
         config = prov.resolve(Configuration)
         expensive = prov.resolve(ExpensiveService)
@@ -1520,6 +1520,24 @@ class TestErrorHandling(unittest.TestCase):
 
         collection = ServiceCollection()
         collection.add_singleton(FailingService)
+
+        # Lazy singleton without a factory should not be constructed during
+        # build_provider(); the exception should surface on first resolve().
+        provider = collection.build_provider()
+
+        with self.assertRaises(RuntimeError) as context:
+            provider.resolve(FailingService)
+
+        self.assertEqual(str(context.exception), "Constructor failed")
+
+    def test_constructor_exception_handling_eager(self):
+        """Test handling of exceptions in eager singleton constructors during build"""
+        class FailingService:
+            def __init__(self):
+                raise RuntimeError("Constructor failed")
+
+        collection = ServiceCollection()
+        collection.add_singleton(FailingService, eager=True)
 
         with self.assertRaises(RuntimeError) as context:
             collection.build_provider()
@@ -2509,8 +2527,37 @@ class TestAdvancedFeatures(unittest.TestCase):
         self.assertEqual(initialization_count, 2)
         self.assertNotEqual(service1.id, service2.id)
 
+    def test_singleton_lazy_by_default_not_built_during_build(self):
+        """Test that a normal singleton is NOT constructed during build_provider()"""
+        initialization_count = 0
+
+        class LazyService:
+            def __init__(self):
+                nonlocal initialization_count
+                initialization_count += 1
+                self.id = uuid.uuid4()
+
+        collection = ServiceCollection()
+        collection.add_singleton(LazyService)
+
+        # Should not be initialized yet
+        self.assertEqual(initialization_count, 0)
+
+        # Building provider should NOT construct plain (non-eager) singletons
+        provider = collection.build_provider()
+        self.assertEqual(initialization_count, 0)
+
+        # Only the first resolve() should construct it
+        service1 = provider.resolve(LazyService)
+        self.assertEqual(initialization_count, 1)
+
+        # Subsequent resolutions should reuse the same instance
+        service2 = provider.resolve(LazyService)
+        self.assertEqual(initialization_count, 1)  # Still just 1
+        self.assertIs(service1, service2)
+
     def test_singleton_eager_initialization_during_build(self):
-        """Test that singletons are initialized during build"""
+        """Test that eager=True singletons are constructed during build_provider()"""
         initialization_count = 0
 
         class EagerService:
@@ -2520,12 +2567,12 @@ class TestAdvancedFeatures(unittest.TestCase):
                 self.id = uuid.uuid4()
 
         collection = ServiceCollection()
-        collection.add_singleton(EagerService)
+        collection.add_singleton(EagerService, eager=True)
 
         # Should not be initialized yet
         self.assertEqual(initialization_count, 0)
 
-        # Building provider should initialize singletons
+        # Building provider should construct eager singletons immediately
         provider = collection.build_provider()
         self.assertEqual(initialization_count, 1)
 
@@ -2534,6 +2581,41 @@ class TestAdvancedFeatures(unittest.TestCase):
         service2 = provider.resolve(EagerService)
         self.assertEqual(initialization_count, 1)  # Still just 1
         self.assertIs(service1, service2)
+
+    def test_build_provider_eager_all_restores_old_behavior(self):
+        """Test that build_provider(eager_all=True) constructs every singleton up front"""
+        initialization_count = 0
+
+        class PlainService:
+            def __init__(self):
+                nonlocal initialization_count
+                initialization_count += 1
+                self.id = uuid.uuid4()
+
+        collection = ServiceCollection()
+        collection.add_singleton(PlainService)
+
+        self.assertEqual(initialization_count, 0)
+
+        provider = collection.build_provider(eager_all=True)
+        self.assertEqual(initialization_count, 1)
+
+        service = provider.resolve(PlainService)
+        self.assertEqual(initialization_count, 1)
+        self.assertIsNotNone(service)
+
+    def test_singleton_factory_still_built_eagerly_by_default(self):
+        """Test that factory-based singletons are still constructed during build by default"""
+        collection = ServiceCollection()
+        collection.add_singleton(Configuration)
+        collection.add_singleton(DatabaseService, factory=configure_database_service)
+
+        provider = collection.build_provider()
+
+        # Factory-backed singleton should already be built, no extra construction on resolve
+        db1 = provider.resolve(DatabaseService)
+        db2 = provider.resolve(DatabaseService)
+        self.assertIs(db1, db2)
 
     def test_eager_singleton_initialization(self):
         """Test that singletons with instances are available immediately"""
