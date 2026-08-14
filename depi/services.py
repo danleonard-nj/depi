@@ -9,7 +9,7 @@ Provides:
 """
 
 import logging
-from threading import Lock
+from threading import Lock, RLock
 from functools import lru_cache
 from functools import wraps
 from typing import Any, Callable, Optional, Type
@@ -270,7 +270,8 @@ class ServiceProvider:
 
     __slots__ = (
         '_service_collection', '_dependency_lookup', '_dependencies', '_singleton_instances',
-        '_cache', '_cache_lock', '_singletons', '_factories', '_transients'
+        '_cache', '_cache_lock', '_singletons', '_factories', '_transients',
+        '_async_singleton_locks', '_async_lock_dict_lock'
     )
 
     def __init__(self, service_collection: ServiceCollection):
@@ -279,7 +280,15 @@ class ServiceProvider:
         self._dependencies = list(self._dependency_lookup.values())
         self._singleton_instances: dict[type, Any] = {}
         self._cache: dict = {}
-        self._cache_lock = Lock()
+        # RLock (not Lock) is required: singleton A's constructor may call
+        # resolve(B) while this lock is held. RLock lets the same thread
+        # re-enter, preventing deadlock during recursive singleton construction.
+        self._cache_lock = RLock()
+        # Per-type asyncio.Lock objects for coroutine-safe lazy singleton
+        # creation. Lazily populated; the dict itself is protected by a small
+        # sync Lock held only while reading or inserting lock objects.
+        self._async_singleton_locks: dict[type, asyncio.Lock] = {}
+        self._async_lock_dict_lock = Lock()
         self._initialize_provider()
 
     def _initialize_provider(self) -> None:
@@ -306,30 +315,47 @@ class ServiceProvider:
         lifetime = reg.lifetime
 
         if lifetime == Lifetime.Singleton:
-            # Avoid repeated dict and attribute lookups
+            # Use registration.dependency_type as the consistent cache key.
+            dep_type = reg.dependency_type
             cache = self._singleton_instances
 
-            instance = cache.get(_type)
+            instance = cache.get(dep_type)
             if instance is not None:
                 return instance
 
+            # RLock allows the same thread to re-enter while constructing a
+            # singleton whose constructor itself calls resolve() for another
+            # singleton (e.g. A.__init__ calls resolve(B)).
             with self._cache_lock:
-                instance = cache.get(_type)
+                instance = cache.get(dep_type)
                 if instance is not None:
                     return instance
 
                 if reg.factory:
                     instance = reg.factory(self)
+                    if inspect.isawaitable(instance):
+                        raise RuntimeError(
+                            f"Factory for '{_type.__name__}' returned an awaitable. "
+                            f"Use resolve_async() to resolve async factories."
+                        )
                 elif reg.instance is not None:
                     instance = reg.instance
                 else:
                     instance = reg.activate(self)
 
-                cache[_type] = instance
+                cache[dep_type] = instance
                 return instance
 
         elif lifetime == Lifetime.Transient:
-            return reg.factory(self) if reg.factory else reg.activate(self)
+            if reg.factory:
+                instance = reg.factory(self)
+                if inspect.isawaitable(instance):
+                    raise RuntimeError(
+                        f"Factory for '{_type.__name__}' returned an awaitable. "
+                        f"Use resolve_async() to resolve async factories."
+                    )
+                return instance
+            return reg.activate(self)
 
         elif lifetime == Lifetime.Scoped:
             raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
@@ -344,53 +370,57 @@ class ServiceProvider:
         reg = self._get_registered_dependency(_type)
 
         if reg.lifetime == Lifetime.Singleton:
+            # Use registration.dependency_type as the consistent cache key.
+            dep_type = reg.dependency_type
+
             # Fast path: lock-free cache check (covers 99% of singleton calls)
-            instance = self._singleton_instances.get(_type)
+            instance = self._singleton_instances.get(dep_type)
             if instance is not None:
                 return instance
 
-            # Slow path: need to create singleton (double-checked locking)
-            with self._cache_lock:
-                # Double-check in case another thread created it
-                instance = self._singleton_instances.get(_type)
+            # Per-type asyncio.Lock is required for coroutine-safe lazy singleton
+            # construction. A single global async lock would deadlock when singleton
+            # A's constructor awaits resolve_async(B) — both would compete for the
+            # same lock. Per-type locks let independent singletons be built
+            # concurrently without blocking each other.
+            #
+            # The dict lock is held only long enough to read or create the asyncio.Lock
+            # object; it is never held across an await.
+            with self._async_lock_dict_lock:
+                lock = self._async_singleton_locks.get(dep_type)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    self._async_singleton_locks[dep_type] = lock
+
+            async with lock:
+                # Double-check after acquiring the per-type async lock.
+                instance = self._singleton_instances.get(dep_type)
                 if instance is not None:
                     return instance
 
-                # Create new singleton
                 if reg.factory:
                     inst = reg.factory(self)
-                    if asyncio.iscoroutine(inst):
+                    if inspect.isawaitable(inst):
                         inst = await inst
                     instance = inst
                 elif reg.instance is not None:
                     # Pre-built during build() phase
                     instance = reg.instance
                 else:
-                    # Lazy singleton
+                    # Lazy singleton via async constructor injection
                     instance = await reg.activate_async(self)
 
-                # Cache and return
-                self._singleton_instances[_type] = instance
+                self._singleton_instances[dep_type] = instance
                 return instance
 
         elif reg.lifetime == Lifetime.Transient:
             if reg.factory:
                 inst = reg.factory(self)
-                return await inst if asyncio.iscoroutine(inst) else inst
+                return await inst if inspect.isawaitable(inst) else inst
             else:
                 return await reg.activate_async(self)
 
         elif reg.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
-
-        else:
-            raise Exception(f"Unknown lifetime: {reg.lifetime}")
-
-        if reg.lifetime == Lifetime.Transient:
-            inst = reg.factory(self) if reg.factory else await reg.activate_async(self)
-            return await inst if asyncio.iscoroutine(inst) else inst
-
-        if reg.lifetime == Lifetime.Scoped:
             raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
 
         raise Exception(f"Unknown lifetime: {reg.lifetime}")
@@ -451,29 +481,50 @@ class ServiceProvider:
                             f"scope isolation."
                         )
 
-    def _topological_sort(self, dependencies: list[DependencyRegistration]) -> list[DependencyRegistration]:
+    def _walk_dependencies(
+        self,
+        roots: list[DependencyRegistration],
+        *,
+        strict: bool,
+        collect_order: bool,
+    ) -> Optional[list[DependencyRegistration]]:
         """
-        Perform DFS-based topological sort to detect cycles and order singletons.
-        """
-        visited = set()
-        visiting = set()
-        order: list[DependencyRegistration] = []
+        DFS over the dependency graph rooted at `roots`, raising on cycles.
 
-        def dfs(dep: DependencyRegistration):
-            if dep in visited:
+        strict=True   -> raise on an unregistered dependency, with the requesting
+                         type for context. Used for the singleton build pass, where a
+                         missing dependency is a hard build-time error.
+        strict=False  -> skip unregistered dependencies. Used for the whole-graph
+                         cycle check, where missing transient/scoped deps are left to
+                         surface at resolve time.
+        collect_order -> when True, return registrations in dependency-first order (a
+                         valid instantiation order); when False, return None.
+        """
+        visited: set = set()
+        visiting: set = set()
+        order: Optional[list] = [] if collect_order else None
+
+        def dfs(reg: DependencyRegistration):
+            if reg in visited:
                 return
-            if dep in visiting:
-                raise Exception(f"Cyclic dependency detected: {dep._type_name}")
-            visiting.add(dep)
-            for param in dep.constructor_params:
-                next_dep = self._get_registered_dependency(param.dependency_type, dep)
-                dfs(next_dep)
-            visiting.remove(dep)
-            visited.add(dep)
-            order.append(dep)
+            if reg in visiting:
+                raise Exception(f"Cyclic dependency detected: {reg._type_name}")
+            visiting.add(reg)
+            for param in reg.constructor_params:
+                if strict:
+                    dep = self._get_registered_dependency(param.dependency_type, reg)
+                else:
+                    dep = self._dependency_lookup.get(param.dependency_type)
+                    if dep is None:
+                        continue
+                dfs(dep)
+            visiting.discard(reg)
+            visited.add(reg)
+            if order is not None:
+                order.append(reg)
 
-        for d in dependencies:
-            dfs(d)
+        for reg in roots:
+            dfs(reg)
         return order
 
     def build(self) -> 'ServiceProvider':
@@ -482,9 +533,12 @@ class ServiceProvider:
         """
         # Validate dependencies before building
         self._validate_dependencies()
+        # whole-graph cycle check across every lifetime (lenient on missing deps)
+        self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        # strict ordered pass over the singletons we actually instantiate
+        sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
             if reg.instance is None:
                 if reg.factory:
@@ -512,9 +566,12 @@ class ServiceProvider:
         """
         # Validate dependencies before building
         self._validate_dependencies()
+        # whole-graph cycle check across every lifetime (lenient on missing deps)
+        self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        sorted_deps = self._topological_sort(to_build)
+        # strict ordered pass over the singletons we actually instantiate
+        sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
             if reg.instance is None:
                 if reg.factory:
