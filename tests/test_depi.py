@@ -1521,10 +1521,28 @@ class TestErrorHandling(unittest.TestCase):
         collection = ServiceCollection()
         collection.add_singleton(FailingService)
 
+        # Lazy singleton: build_provider() must not construct it...
+        provider = collection.build_provider()
+
+        # ...the exception only surfaces on first resolve().
+        with self.assertRaises(RuntimeError) as context:
+            provider.resolve(FailingService)
+
+        self.assertEqual(str(context.exception), "Constructor failed")
+
+    def test_eager_constructor_exception_handling_during_build(self):
+        """Test that eager=True singleton constructor exceptions surface during build"""
+        class FailingEagerService:
+            def __init__(self):
+                raise RuntimeError("Eager constructor failed")
+
+        collection = ServiceCollection()
+        collection.add_singleton(FailingEagerService, eager=True)
+
         with self.assertRaises(RuntimeError) as context:
             collection.build_provider()
 
-        self.assertEqual(str(context.exception), "Constructor failed")
+        self.assertEqual(str(context.exception), "Eager constructor failed")
 
     def test_transient_constructor_exception_handling(self):
         """Test handling of exceptions in transient constructors"""
@@ -2484,7 +2502,7 @@ class TestAdvancedFeatures(unittest.TestCase):
             )
 
     def test_lazy_singleton_initialization(self):
-        """Test that singletons are initialized lazily (not during build)"""
+        """Test that singletons are initialized lazily by default (not during build)"""
         initialization_count = 0
 
         class LazyService:
@@ -2494,23 +2512,49 @@ class TestAdvancedFeatures(unittest.TestCase):
                 self.id = uuid.uuid4()
 
         collection = ServiceCollection()
-        collection.add_transient(LazyService)  # Use transient to avoid build-time initialization
+        collection.add_singleton(LazyService)
+        provider = collection.build_provider()
+
+        # Should not be constructed during build()
+        self.assertEqual(initialization_count, 0)
+
+        # First resolution should construct it
+        service1 = provider.resolve(LazyService)
+        self.assertEqual(initialization_count, 1)
+
+        # Second resolution should reuse the same instance (singleton)
+        service2 = provider.resolve(LazyService)
+        self.assertEqual(initialization_count, 1)
+        self.assertIs(service1, service2)
+
+    def test_transient_lazy_initialization(self):
+        """Test that transients are constructed fresh on every resolution"""
+        initialization_count = 0
+
+        class LazyTransient:
+            def __init__(self):
+                nonlocal initialization_count
+                initialization_count += 1
+                self.id = uuid.uuid4()
+
+        collection = ServiceCollection()
+        collection.add_transient(LazyTransient)
         provider = collection.build_provider()
 
         # Should not be initialized yet
         self.assertEqual(initialization_count, 0)
 
         # First resolution should initialize
-        service1 = provider.resolve(LazyService)
+        service1 = provider.resolve(LazyTransient)
         self.assertEqual(initialization_count, 1)
 
         # Second resolution should create new instance (transient)
-        service2 = provider.resolve(LazyService)
+        service2 = provider.resolve(LazyTransient)
         self.assertEqual(initialization_count, 2)
         self.assertNotEqual(service1.id, service2.id)
 
     def test_singleton_eager_initialization_during_build(self):
-        """Test that singletons are initialized during build"""
+        """Test that add_singleton(eager=True) constructs the singleton during build()"""
         initialization_count = 0
 
         class EagerService:
@@ -2520,12 +2564,12 @@ class TestAdvancedFeatures(unittest.TestCase):
                 self.id = uuid.uuid4()
 
         collection = ServiceCollection()
-        collection.add_singleton(EagerService)
+        collection.add_singleton(EagerService, eager=True)
 
         # Should not be initialized yet
         self.assertEqual(initialization_count, 0)
 
-        # Building provider should initialize singletons
+        # Building provider should initialize eager singletons
         provider = collection.build_provider()
         self.assertEqual(initialization_count, 1)
 
@@ -2534,6 +2578,27 @@ class TestAdvancedFeatures(unittest.TestCase):
         service2 = provider.resolve(EagerService)
         self.assertEqual(initialization_count, 1)  # Still just 1
         self.assertIs(service1, service2)
+
+    def test_build_provider_eager_all_constructs_every_singleton(self):
+        """Test that build_provider(eager_all=True) restores eager-all construction"""
+        counts = {"a": 0, "b": 0}
+
+        class SvcA:
+            def __init__(self):
+                counts["a"] += 1
+
+        class SvcB:
+            def __init__(self):
+                counts["b"] += 1
+
+        collection = ServiceCollection()
+        collection.add_singleton(SvcA)  # not individually marked eager
+        collection.add_singleton(SvcB)  # not individually marked eager
+
+        provider = collection.build_provider(eager_all=True)
+
+        self.assertEqual(counts["a"], 1)
+        self.assertEqual(counts["b"], 1)
 
     def test_eager_singleton_initialization(self):
         """Test that singletons with instances are available immediately"""
@@ -3545,20 +3610,23 @@ class TestDeadlockFixes(unittest.TestCase):
         """
         build() must store the value returned by activate() in the singleton
         cache, not None (regression guard: activate() returns the instance but
-        does not assign registration.instance itself).
+        does not assign registration.instance itself), for registrations
+        explicitly marked eager=True.
         """
         class EagerSvc:
             pass
 
         coll = ServiceCollection()
-        coll.add_singleton(EagerSvc)
+        coll.add_singleton(EagerSvc, eager=True)
         provider = coll.build_provider()  # calls build() eagerly
 
+        # Confirm the cache entry is populated by build(), before any resolve().
+        cached = provider._singleton_instances.get(EagerSvc)
+        self.assertIsNotNone(cached)
+        self.assertIsInstance(cached, EagerSvc)
+
         resolved = provider.resolve(EagerSvc)
-        self.assertIsNotNone(resolved)
-        self.assertIsInstance(resolved, EagerSvc)
-        # Confirm the cache entry is non-None.
-        self.assertIsNotNone(provider._singleton_instances.get(EagerSvc))
+        self.assertIs(resolved, cached)
 
     # ── Lifetime regression tests ──────────────────────────────────────────────
 
