@@ -178,4 +178,5 @@ configuration.py
 web.py
 exceptions.py
 .vscode/settings.json
-tests/benchmark_results.json
+tests/**/benchmark_results*.json
+tests/benchmark_results*.json

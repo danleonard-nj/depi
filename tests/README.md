@@ -1,209 +1,42 @@
-# DEPI Test Suite Documentation
+# depi Test Suite
 
-## Overview
+All packages in the monorepo are tested from here, so a framework release that breaks an adapter is visible immediately. The directories are meant to be run as **separate CI jobs**, which is what keeps a broken adapter from turning the core suite red.
 
-This comprehensive test suite validates all aspects of the DEPI (Dependency Injection) framework. The test suite contains **52 tests** across **8 test classes**, covering every major feature and edge case.
+```
+core/          the container itself — no web framework installed, no third-party imports
+integrations/  one module per adapter, each guarding its framework's quirks
+benchmarks/    performance measurement, compared against `dependency-injector`
+```
 
-## Test Coverage
-
-### 1. TestServiceCollection (12 tests)
-
-Tests the service registration and configuration functionality:
-
-- ✅ Singleton registration
-- ✅ Transient registration
-- ✅ Scoped registration
-- ✅ Interface/implementation abstraction
-- ✅ Instance registration
-- ✅ Factory registration
-- ✅ Bulk registration
-- ✅ Constructor dependency detection
-- ✅ Multi-dependency constructor handling
-
-### 2. TestDependencyInjection (10 tests)
-
-Tests core dependency injection functionality:
-
-- ✅ Singleton lifetime behavior
-- ✅ Transient lifetime behavior
-- ✅ Scoped lifetime behavior
-- ✅ Factory functions (singleton, scoped, transient)
-- ✅ Complex service graphs
-- ✅ Nested dependency resolution
-- ✅ Error handling for unregistered services
-- ✅ Instance registration behavior
-
-### 3. TestAsyncSupport (4 tests)
-
-Tests asynchronous dependency injection:
-
-- ✅ Async singleton resolution
-- ✅ Async transient resolution
-- ✅ Async scoped resolution
-- ✅ Sync factory in async context
-
-### 4. TestServiceScope (6 tests)
-
-Tests service scope lifecycle management:
-
-- ✅ Scope creation and disposal
-- ✅ Context manager support
-- ✅ Async context manager support
-- ✅ Disposable service cleanup
-- ✅ Multiple scope isolation
-- ✅ Transient/singleton behavior in scopes
-
-### 5. TestErrorHandling (6 tests)
-
-Tests error handling and edge cases:
-
-- ✅ Circular dependency detection
-- ✅ Missing dependency errors
-- ✅ Invalid lifetime handling
-- ✅ Factory exception handling
-- ✅ Constructor exception handling
-- ✅ Build-time vs runtime error distinction
-
-### 6. TestThreadSafety (3 tests)
-
-Tests thread safety across multiple threads:
-
-- ✅ Singleton thread safety (10 concurrent threads)
-- ✅ Transient thread safety (10 concurrent threads)
-- ✅ Scoped thread safety (5 concurrent scopes)
-
-### 7. TestDependencyInjectorDecorator (4 tests)
-
-Tests the dependency injection decorator:
-
-- ✅ Function decoration with DI
-- ✅ Partial parameter injection
-- ✅ Strict mode error handling
-- ✅ Non-strict mode graceful degradation
-
-### 8. TestAdvancedFeatures (7 tests)
-
-Tests advanced and performance features:
-
-- ✅ Multiple interface implementations
-- ✅ Registration overriding
-- ✅ Complex dependency graphs
-- ✅ Lazy vs eager initialization
-- ✅ Performance benchmarking (1000 resolutions)
-- ✅ Build-time singleton initialization
-
-## Key Features Tested
-
-### Lifetimes
-
-- **Singleton**: One instance per container
-- **Transient**: New instance every resolution
-- **Scoped**: One instance per scope
-
-### Advanced Features
-
-- Factory functions for custom instantiation
-- Constructor dependency injection
-- Interface abstraction
-- Async/await support
-- Thread safety
-- Circular dependency detection
-- Performance optimization
-- Scope lifecycle management
-
-### Error Handling
-
-- Missing dependencies
-- Circular dependencies
-- Factory failures
-- Constructor failures
-- Invalid configurations
-
-### Integration Features
-
-- Dependency injection decorators
-- Framework middleware (FastAPI, Flask)
-- Async context managers
-- Disposable service cleanup
-
-## Running the Tests
-
-### Run All Tests
+## Running
 
 ```bash
-python -m pytest tests/tests.py -v
+pytest tests/core
 ```
 
-### Run Specific Test Class
+Core is the job that must always be green. It needs nothing but `pytest`, and asserts the container, lifetimes, scopes, thread safety, async resolution, and the ambient-scope contextvar in `test_context.py`.
 
 ```bash
-python -m pytest tests/tests.py::TestServiceCollection -v
+pytest tests/integrations
 ```
 
-### Run With Coverage
+Needs the adapters installed (`pip install -r requirements-dev.txt`). In CI this should be one job per framework, with a version matrix — that is where framework version ranges belong, not in package metadata.
 
 ```bash
-python -m pytest tests/tests.py --cov=depi --cov-report=html
+pytest tests/benchmarks
 ```
 
-### Run Custom Test Runner
+Needs `dependency-injector` and `psutil`. Results are informational; these do not gate merges.
 
-```bash
-python tests/test_runner.py
-```
+## Conventions
 
-## Test Quality Metrics
+- `integrations/conftest.py` defines one set of services (`Config`, `RequestId`, `Ephemeral`, `Disposable`, `Greeter`) covering all three lifetimes plus a disposal hook. Every adapter is exercised against the same services, so a difference in results points at the adapter rather than at the container.
+- Integration modules are marked `pytest.mark.integration` and guarded with `pytest.importorskip`, so they skip rather than error when a framework is absent.
+- Each adapter asserts the same behavioural contract: scope injected, autowire where supported, scoped shared within a request, scoped distinct across requests, singleton shared across requests, scope disposed at request end, and no contextvar leak afterwards.
 
-- **Coverage**: 100% of public API
-- **Test Count**: 52 comprehensive tests
-- **Thread Safety**: Verified with concurrent execution
-- **Performance**: Benchmarked for scalability
-- **Error Cases**: Comprehensive edge case coverage
-- **Async Support**: Full async/await validation
+## Framework-specific regressions worth knowing about
 
-## Example Test Output
-
-```
-DEPI DEPENDENCY INJECTION FRAMEWORK - COMPREHENSIVE TEST SUITE
-================================================================================
-
-📋 Running TestServiceCollection
-------------------------------------------------------------
-✅ TestServiceCollection: 12/12 tests passed
-
-📋 Running TestDependencyInjection
-------------------------------------------------------------
-✅ TestDependencyInjection: 10/10 tests passed
-
-...
-
-🏆 OVERALL RESULTS:
-   Total Tests: 52
-   Passed: 52
-   Failed: 0
-   Success Rate: 100.0%
-   Duration: 0.19 seconds
-
-🎉 ALL TESTS PASSED! The DEPI framework is working correctly.
-```
-
-## Test Architecture
-
-The test suite uses:
-
-- **unittest** framework for test structure
-- **asyncio** for async test execution
-- **threading** for concurrency testing
-- **uuid** for unique instance identification
-- **time** for performance benchmarking
-- **Mock** objects for isolation testing
-
-Each test is:
-
-- Self-contained and isolated
-- Thoroughly documented
-- Includes both positive and negative test cases
-- Validates expected behavior and proper error handling
-- Uses descriptive assertions with meaningful error messages
-
-This comprehensive test suite ensures the DEPI framework is robust, performant, and ready for production use.
+- **FastAPI** — `test_fastapi_still_rejects_a_bare_service_annotation` asserts that FastAPI raises `FastAPIError` at *decoration* time for an unannotatable service parameter. That constraint is the reason autowire is unsupported there; if a future FastAPI makes it legal, this test fails and the design can be revisited. `test_openapi_schema_does_not_leak_injected_parameters` covers what the old signature-rewriting injector existed to do.
+- **Flask** — `test_scope_does_not_leak_between_requests_on_a_reused_thread` exists because Werkzeug reuses worker threads, so a contextvar set without a matching reset would survive into the next request on that thread.
+- **Quart** — `test_async_cleanup_hooks_are_awaited_on_disposal` covers disposal going through `__aexit__` rather than plain `dispose()`.
+- **Django** — settings are configured at module import and the URLconf is the test module itself, mirroring a real project where the provider is built once in `AppConfig.ready()`.

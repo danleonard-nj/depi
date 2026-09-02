@@ -5,14 +5,12 @@ Provides:
 - Type-hinted constructor injection
 - Singleton, Transient, and Scoped lifetimes
 - Async factory and constructor support
-- FastAPI and Flask integration via middleware
 """
 
 import logging
 from threading import Lock, RLock
 from functools import lru_cache
-from functools import wraps
-from typing import Any, Callable, Optional, Type
+from typing import Any, Callable, Optional
 import asyncio
 import inspect
 
@@ -442,6 +440,16 @@ class ServiceProvider:
 
         raise Exception(f"Unknown lifetime: {reg.lifetime}")
 
+    def is_registered(self, _type: type) -> bool:
+        """
+        Return True if ``_type`` has a registration.
+
+        Integrations use this to decide whether an annotated view-function
+        parameter is something depi owns, or something the web framework will
+        supply (a path converter, a query argument).
+        """
+        return _type in self._dependency_lookup
+
     def _get_registered_dependency(
         self,
         implementation_type: type,
@@ -670,6 +678,15 @@ class ServiceScope:
         factory = reg.factory
         if factory:
             inst = factory(self)
+            # Same guard ServiceProvider.resolve applies. Without it an async
+            # factory resolved through a scope returns an un-awaited coroutine,
+            # which then fails far away from its cause -- and scopes are what
+            # every web integration resolves through.
+            if inspect.isawaitable(inst):
+                raise RuntimeError(
+                    f"Factory for '{_type.__name__}' returned an awaitable. "
+                    f"Use resolve_async() to resolve async factories."
+                )
         else:
             # your precompiled sync resolver
             inst = reg._resolver_fn(self)
@@ -712,6 +729,10 @@ class ServiceScope:
             insts[_type] = inst
 
         return inst
+
+    def is_registered(self, _type: type) -> bool:
+        """Return True if ``_type`` has a registration. See ServiceProvider.is_registered."""
+        return _type in self._dependency_lookup
 
     def dispose(self) -> None:
         """

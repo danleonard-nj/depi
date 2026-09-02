@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydepi"
+version = "0.1.0"
+description = "A .NET-inspired, type-hint driven dependency injection container for Python"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Dan Leonard"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["dependency-injection", "di", "ioc", "inversion-of-control", "container"]
+requires-python = ">=3.10"
+
+# Core has no dependencies and is meant to keep it that way. Web framework
+# support ships as separate distributions; the extras below are convenience
+# aliases for installing them.
+dependencies = []
+
+[project.optional-dependencies]
+flask = ["pydepi-flask"]
+quart = ["pydepi-quart"]
+fastapi = ["pydepi-fastapi"]
+django = ["pydepi-django"]
+all = ["pydepi[flask,quart,fastapi,django]"]
+
+[project.urls]
+Homepage = "https://github.com/danleonard-nj/depi"
+Repository = "https://github.com/danleonard-nj/depi"
+Issues = "https://github.com/danleonard-nj/depi/issues"
+
+[tool.setuptools.packages.find]
+include = ["depi*"]

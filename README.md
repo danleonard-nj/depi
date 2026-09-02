@@ -1,22 +1,313 @@
 # depi – Dependency Injection for Python
 
-`depi` is a type-safe dependency injection framework that provides automatic dependency resolution through type annotations. Designed for modern Python applications, it offers both strict and non-strict injection modes to support different architectural patterns and gradual adoption strategies.
+`depi` is a type-safe dependency injection container that resolves dependency graphs from constructor type annotations. The core has **no dependencies** and knows nothing about the web; framework support ships as separate, independently versioned packages.
 
 Interested in `depi`'s lineage before the dawn of AI? `depi` has been in iterative development since 2020! (lineage from 2022: https://github.com/danleonard-nj/framework/tree/main/framework/di)
 
-## Key Features
+## Packages
 
-- **Automatic Resolution**: Analyzes type annotations to resolve dependency graphs without manual configuration, handling complex multi-level architectures with dozens of interconnected services
-- **Advanced Factory Support**: Sophisticated factory patterns for conditional creation, resource management, and dynamic configuration based on runtime conditions
-- **Complex Graph Handling**: Efficiently resolves intricate dependency trees with transitive dependencies, cross-cutting concerns, and circular dependency detection
-- **Type Safety**: Enforces strict typing for early error detection and better IDE support
-- **Dual Operating Modes**: Strict mode for clean API documentation, non-strict for gradual adoption
-- **Async Support**: Native async/await support with `resolve_async` for modern web frameworks
-- **Lifecycle Management**: Singleton, Transient, and Scoped lifetimes with proper cleanup
-- **Framework Integration**: Built-in middleware for FastAPI and Flask
-- **Production Ready**: Used in production environments since 2022
+This repository is a monorepo. Each package is its own distribution with its own release cadence, so a framework changing under an adapter never forces a core release — and never drags a web framework into an application that only wanted the container.
 
-## Performance Characteristics
+| Package          | Import         | Depends on          |
+| ---------------- | -------------- | ------------------- |
+| `pydepi`         | `depi`         | *nothing*           |
+| `pydepi-flask`   | `depi_flask`   | `pydepi`, `flask`   |
+| `pydepi-quart`   | `depi_quart`   | `pydepi`, `quart`   |
+| `pydepi-fastapi` | `depi_fastapi` | `pydepi`, `fastapi` |
+| `pydepi-django`  | `depi_django`  | `pydepi`, `django`  |
+
+Tests for every package live together under `tests/`, so an adapter breaking against a new framework release is caught immediately — but they run as separate CI jobs, so a broken adapter cannot turn the core suite red.
+
+## Installation
+
+```bash
+pip install pydepi
+```
+
+`pip install pydepi` pulls in nothing else. Add a framework adapter with an extra, or install it directly:
+
+```bash
+pip install pydepi[flask]
+```
+
+```bash
+pip install pydepi-fastapi
+```
+
+Extras available: `flask`, `quart`, `fastapi`, `django`, and `all`.
+
+## Quick Start
+
+```python
+from depi import ServiceCollection
+
+class Config:
+    def __init__(self):
+        self.dsn = 'postgres://localhost/app'
+
+class Database:
+    def __init__(self, config: Config):      # resolved from the annotation
+        self.dsn = config.dsn
+
+class UserService:
+    def __init__(self, db: Database):
+        self.db = db
+
+services = ServiceCollection()
+services.add_singleton(Config)
+services.add_scoped(Database)
+services.add_transient(UserService)
+
+provider = services.build_provider()
+user_service = provider.resolve(UserService)
+```
+
+Every constructor parameter must carry a type annotation; an unannotated parameter is an error at registration time rather than a surprise at resolution time.
+
+### Registration Forms
+
+```python
+services.add_singleton(ILogger, ConsoleLogger)        # interface -> implementation
+services.add_singleton(ILogger, instance=my_logger)   # pre-built instance
+services.add_scoped(Repository, factory=repo_factory) # factory (see below)
+services.register_many([UserService, OrderService], lifetime=Lifetime.Singleton)
+
+provider = services.build_provider(eager_all=True)    # construct singletons at build time
+```
+
+## Lifetimes
+
+- **Transient** – a new instance on every resolution
+- **Singleton** – one instance for the life of the provider
+- **Scoped** – one instance per scope, typically per HTTP request
+
+Scopes are context managers, and disposal is explicit:
+
+```python
+with provider.create_scope() as scope:
+    repo = scope.resolve(Repository)   # same instance for the whole block
+# scope disposed here: dispose() is called on any scoped instance that defines it
+```
+
+Async cleanup is supported too — `async with provider.create_scope()` awaits `__aexit__` on scoped instances before disposing them.
+
+## Framework Integrations
+
+Every adapter does the same three things: open a scope per request, bind it to the ambient context, and dispose it when the request ends. What differs is how the scope reaches your view.
+
+### Two injection modes
+
+**Provider injection (default).** The request scope is handed to the view and you resolve from it explicitly. Works with every framework.
+
+**Autowire (opt-in).** Parameters annotated with registered types are resolved and passed individually. Parameters the container doesn't know about are left for the framework to fill — that's how URL arguments still work. **Not available on FastAPI**, which reads endpoint signatures to build request parsing and the OpenAPI schema, and raises at decoration time on any annotation it cannot treat as a Pydantic field.
+
+### Flask
+
+```python
+from flask import Flask
+from depi import ServiceCollection
+from depi_flask import FlaskInjector
+
+app = Flask(__name__)
+provider = services.build_provider()
+
+injector = FlaskInjector(provider)
+injector.setup(app)
+
+@app.route('/users/<user_id>')
+@injector.inject
+def get_user(user_id, provider):
+    return provider.resolve(UserService).get(user_id)
+```
+
+With autowire:
+
+```python
+injector = FlaskInjector(provider, autowire=True)
+injector.setup(app)
+
+@app.route('/users/<user_id>')
+@injector.inject
+def get_user(user_id, users: UserService):   # user_id stays Flask's
+    return users.get(user_id)
+```
+
+### Quart
+
+Identical to Flask, with async views. `inject` uses `functools.wraps`, so it composes inside a decorator stack — route registration, authentication, response handling — without the outer layers losing the view's identity:
+
+```python
+from depi_quart import QuartInjector
+
+injector = QuartInjector(provider, param_name='container')
+injector.setup(app)
+
+@app.route('/users/<user_id>')
+@injector.inject
+async def get_user(user_id, container):
+    users = await container.resolve_async(UserService)
+    return await users.get(user_id)
+```
+
+`param_name` renames the injected keyword argument, so an existing convention (`container`, `services`, …) does not require a fork.
+
+### FastAPI
+
+FastAPI uses `Depends`, so depi never touches your endpoint signature and your OpenAPI schema stays clean:
+
+```python
+from fastapi import Depends, FastAPI
+from depi_fastapi import FastAPIInjector
+
+app = FastAPI()
+injector = FastAPIInjector(provider)
+injector.setup(app)
+
+@app.get('/users/{user_id}')
+async def get_user(user_id: str, scope=Depends(injector.get_scope)):
+    return scope.resolve(UserService).get(user_id)
+```
+
+Scope management is a pure ASGI middleware rather than an `http` middleware decorator, for two reasons: the contextvar is set in the same context the endpoint coroutine runs in, and disposal happens after the response body is sent rather than when the handler returns.
+
+### Django
+
+Django builds middleware itself from a dotted path, so the injector registers itself at startup instead of being constructed inline:
+
+```python
+# apps.py
+from django.apps import AppConfig
+from depi_django import DjangoInjector
+
+class MyAppConfig(AppConfig):
+    name = 'myapp'
+
+    def ready(self):
+        DjangoInjector(build_provider()).setup()
+
+# settings.py
+MIDDLEWARE = ['depi_django.DepiScopeMiddleware', ...]
+
+# views.py
+@injector.inject
+def get_user(request, user_id, provider):
+    return JsonResponse(provider.resolve(UserService).get(user_id))
+```
+
+The middleware matches whatever `get_response` it is given, so both the sync and async request paths work.
+
+### Reaching the scope directly
+
+Anything running inside a request can reach the scope without it being threaded through:
+
+```python
+from depi import current_scope, get_current_scope, use_scope
+
+scope = current_scope()          # raises NoActiveScopeError if there is none
+scope = get_current_scope()      # returns None instead
+
+with use_scope(my_scope):        # bind manually, e.g. in a worker or a test
+    ...
+```
+
+## Factories
+
+A factory receives **one argument: the provider or scope**. Resolve what you need from it:
+
+```python
+def database_factory(provider) -> DatabaseConnection:
+    config = provider.resolve(AppConfig)
+    logger = provider.resolve(Logger)
+    if config.environment == 'production':
+        return ProductionDatabase(config.db_url, pool_size=config.db_pool_size, logger=logger)
+    return InMemoryDatabase(logger=logger)
+
+services.add_singleton(DatabaseConnection, factory=database_factory)
+```
+
+Async factories are supported and are awaited by `resolve_async`:
+
+```python
+async def client_factory(provider) -> HttpClient:
+    client = HttpClient(provider.resolve(AppConfig).api_base_url)
+    await client.connect()
+    return client
+
+services.add_singleton(HttpClient, factory=client_factory)
+client = await provider.resolve_async(HttpClient)
+```
+
+Singleton factories — async ones included — are constructed during `build_provider()`, so `resolve()` returns the finished instance. Transient and scoped factories run per resolution, and calling the synchronous `resolve()` on an async one raises a `RuntimeError` pointing at `resolve_async()` rather than handing back an un-awaited coroutine.
+
+## Registering One Instance Under Several Interfaces
+
+```python
+unified = UnifiedService(config, logger)
+services.add_singleton(IEmailService, instance=unified)
+services.add_singleton(ISMSService, instance=unified)
+services.add_singleton(IPushService, instance=unified)
+```
+
+Registering the same *factory* under several interfaces produces a separate instance per registration; share one by building it eagerly and registering the instance, as above.
+
+## Environment-Based Registration
+
+Registration is ordinary Python, so branching needs no special support:
+
+```python
+def configure_services(env: str) -> ServiceCollection:
+    services = ServiceCollection()
+    services.add_singleton(Logger)
+    services.add_singleton(AppConfig)
+
+    if env == 'prod':
+        services.add_singleton(IEmailService, ProductionEmailService)
+        services.add_singleton(ICache, RedisCache)
+    else:
+        services.add_singleton(IEmailService, MockEmailService)
+        services.add_singleton(ICache, InMemoryCache)
+
+    return services
+```
+
+## Testing
+
+Swap implementations at registration time:
+
+```python
+def test_services() -> ServiceCollection:
+    services = ServiceCollection()
+    services.add_transient(UserService)                          # real logic
+    services.add_singleton(DatabaseConnection, instance=Mock())  # mocked edges
+    return services
+
+def test_order_processing():
+    provider = test_services().build_provider()
+    assert provider.resolve(UserService).get('1') is not None
+```
+
+A view decorated with `inject` can be called directly, without a request, by passing the scope yourself — the ambient scope is only consulted for parameters you did not supply:
+
+```python
+with provider.create_scope() as scope:
+    response = get_user('user-1', provider=scope)
+```
+
+## Errors
+
+Container failures raise `Exception` with a descriptive message; there is no bespoke exception hierarchy yet (see Roadmap). The checks that run:
+
+| Condition | Message |
+| --- | --- |
+| Cycle in the graph, at `build_provider()` | `Cyclic dependency detected: A` |
+| Dependency never registered | `Failed to locate registration for 'Missing'` |
+| Constructor parameter without an annotation | `Missing type annotation for parameter 'x' in NoAnn` |
+| Singleton depending on a scoped service | `Singleton 'X' cannot depend on scoped 'Y'...` |
+| Scoped resolution without a scope | `Scoped resolution requires a scope. Call provider.create_scope().` |
+
+Reaching for the request scope outside a request raises `NoActiveScopeError`, which subclasses `RuntimeError`.
+
+## Performance
 
 Benchmarked on 12th Gen Intel i7-12800H with Python 3.11.5:
 
@@ -27,441 +318,57 @@ Benchmarked on 12th Gen Intel i7-12800H with Python 3.11.5:
 | Memory Allocation (µs)  | 15.69  | 9.04                  |
 | Setup Time (µs)         | 21.33  | 95.39                 |
 
-**Analysis**: `depi` trades 2.3x resolution time for zero-configuration auto-resolution of complex dependency graphs. Setup performance is 4.5x faster due to efficient topological sorting that handles intricate service relationships. Memory allocation overhead (6.65 µs difference) reflects the cost of creating dependency metadata structures for automatic graph resolution. Performance remains consistent even with deep dependency chains (10+ levels) and complex factory patterns.
+**Analysis**: `depi` trades 2.3x resolution time for zero-configuration auto-resolution of complex dependency graphs. Setup is 4.5x faster. Performance stays consistent with deep dependency chains (10+ levels) and factory patterns.
 
 ![depi vs dependency-injector benchmarks](tests/benchmarks.png)
 
-For comparison, .NET's `Microsoft.Extensions.DependencyInjection` resolves in ~50-100 ns with ~5-10 MB memory usage. `depi`'s 211.0 ns demonstrates competitive performance for a dynamic language.
+Reproduce with `pytest tests/benchmarks`. Signature inspection for autowired views happens once at decoration time, not per request.
 
-Run the [benchmark script](tests/updated_benchmark_depi.py) to verify results. Raw data: [benchmark_results_final.json](tests/benchmark_results_final.json).
+## Thread Safety
 
-## Complex Dependency Graph Capabilities
+Singleton resolution is thread-safe; the provider uses an `RLock` so a singleton constructor can resolve further singletons without deadlocking. Coroutine-safe lazy singleton creation uses a per-type `asyncio.Lock`. Scoped instances are isolated per scope, and the ambient scope is a `ContextVar`, so it is isolated per thread and per task.
 
-`depi` is engineered to handle sophisticated enterprise-grade dependency architectures that would be impractical to wire manually:
-
-- **Deep Dependency Trees**: Efficiently resolves chains 10+ levels deep with consistent O(n) performance
-- **Transitive Dependencies**: Automatically discovers and resolves indirect dependencies across service boundaries
-- **Cross-Cutting Concerns**: Handles shared services (logging, configuration, caching) injected across multiple dependency branches
-- **Factory Orchestration**: Coordinates complex factory methods that themselves have dependencies, enabling dynamic service creation
-- **Multi-Interface Services**: Supports services implementing multiple interfaces with proper lifetime management
-- **Conditional Graphs**: Runtime dependency graph modification based on configuration, environment, or feature flags
-
-**Real-world example**: A typical microservice with 50+ registered services, including repositories, business services, external API clients, caching layers, and cross-cutting concerns, resolves in under 500ns with `depi`'s optimized graph traversal.
-
-## Installation
+## Development
 
 ```bash
-pip install depi
+pip install -r requirements-dev.txt
 ```
 
-## Usage Examples
+That installs all five packages in editable mode plus the test toolchain.
 
-### FastAPI Integration (Strict Mode)
-
-Strict mode removes injectable parameters from OpenAPI documentation, producing clean API specs:
-
-```python
-from depi import ServiceCollection, DependencyInjector
-from fastapi import FastAPI
-import logging
-
-# Service definitions
-class EmailService:
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
-class NotificationService:
-    def __init__(self, email: EmailService):
-        self.email = email
-
-    def send_notification(self, message: str):
-        self.email.logger.info(f"Notification: {message}")
-        return {"status": "sent", "message": message}
-
-# Service registration
-services = ServiceCollection()
-services.add_transient(EmailService)
-services.add_transient(NotificationService)
-services.add_singleton(logging.Logger, instance=logging.getLogger("app"))
-provider = services.build_provider()
-
-# FastAPI setup with strict injection
-app = FastAPI()
-di = DependencyInjector(provider, strict=True)
-di.setup_fastapi(app)
-
-@app.get("/send")
-@di.inject
-async def send_notification(message: str, service: NotificationService):
-    # OpenAPI shows only: send_notification(message: str)
-    # NotificationService injected automatically
-    return service.send_notification(message)
+```bash
+pytest tests/core
 ```
 
-### Flask Integration (Non-Strict Mode)
-
-Non-strict mode allows partial injection and graceful degradation:
-
-```python
-from depi import ServiceCollection, DependencyInjector
-from flask import Flask
-import logging
-
-class DatabaseService:
-    def __init__(self, logger: logging.Logger):
-        self.logger = logger
-
-    def get_data(self):
-        self.logger.info("Fetching data from database")
-        return {"data": "sample_data"}
-
-class CacheService:
-    def get_cached(self, key: str):
-        return f"cached_{key}"
-
-class DataService:
-    def __init__(self, db: DatabaseService, cache: CacheService = None):
-        self.db = db
-        self.cache = cache
-
-    def get_data(self, key: str):
-        if self.cache:
-            return self.cache.get_cached(key)
-        return self.db.get_data()
-
-# Partial service registration (CacheService intentionally omitted)
-services = ServiceCollection()
-services.add_singleton(DatabaseService)
-services.add_transient(DataService)
-services.add_singleton(logging.Logger, instance=logging.getLogger("app"))
-provider = services.build_provider()
-
-app = Flask(__name__)
-di = DependencyInjector(provider, strict=False)
-di.setup_flask(app)
-
-@app.route('/data/<key>')
-@di.inject
-def get_data(key: str, service: DataService, cache: CacheService = None):
-    # DataService injected, CacheService remains None
-    return service.get_data(key)
+```bash
+pytest tests/integrations
 ```
 
-## Operating Modes
-
-### Strict Mode (`strict=True`)
-
-- **Use Case**: Production APIs requiring clean documentation
-- **Behavior**: Removes all injectable parameters from function signatures
-- **Error Handling**: Fails fast if any dependency cannot be resolved
-- **Best For**: FastAPI applications, greenfield projects
-
-### Non-Strict Mode (`strict=False`)
-
-- **Use Case**: Legacy codebases, gradual DI adoption
-- **Behavior**: Injects only registered dependencies, preserves others
-- **Error Handling**: Graceful degradation with default values
-- **Best For**: Flask/Django applications, brownfield projects
-
-## Technical Architecture
-
-### Thread Safety
-
-`depi` implements thread-safe singleton resolution using atomic operations and lock-free patterns. Multiple threads can safely resolve dependencies concurrently without blocking. Scoped lifetimes use thread-local storage to maintain isolation.
-
-### Circular Dependency Detection
-
-The framework performs static analysis during container build to detect circular dependencies. When a cycle is detected, `depi` raises a `CircularDependencyError` with the complete dependency chain for debugging:
-
-```python
-# This will raise CircularDependencyError during build_provider()
-class ServiceA:
-    def __init__(self, b: 'ServiceB'): pass
-
-class ServiceB:
-    def __init__(self, a: ServiceA): pass
-
-services = ServiceCollection()
-services.add_transient(ServiceA)
-services.add_transient(ServiceB)
-# Raises: CircularDependencyError: ServiceA -> ServiceB -> ServiceA
-provider = services.build_provider()
+```
+packages/
+  depi-core/      depi/          container, scopes, ambient context, integration base
+  depi-flask/     depi_flask/
+  depi-quart/     depi_quart/
+  depi-fastapi/   depi_fastapi/
+  depi-django/    depi_django/
+tests/
+  core/  integrations/  benchmarks/
 ```
 
-### Error Handling
-
-`depi` provides detailed error reporting for common issues:
-
-- **`UnresolvableTypeError`**: Raised when a required dependency cannot be resolved
-- **`CircularDependencyError`**: Detected during container compilation
-- **`InvalidLifetimeError`**: Mismatched lifetime configurations
-- **`TypeAnnotationError`**: Missing or invalid type annotations
-
-Errors include the complete resolution chain for effective debugging.
-
-### Memory Management
-
-The framework uses weak references for dependency metadata and implements proper cleanup for scoped lifetimes. Memory usage scales linearly with the number of registered services, with minimal overhead per registration.
-
-## Advanced Features
-
-### Complex Dependency Graph Resolution
-
-`depi` excels at resolving intricate dependency graphs with multiple levels and cross-cutting concerns. The framework automatically handles dependency ordering, transitive dependencies, and complex injection patterns:
-
-```python
-# Complex multi-layered architecture
-class DatabaseConnection:
-    def __init__(self, config: AppConfig, logger: Logger): pass
-
-class UserRepository:
-    def __init__(self, db: DatabaseConnection, cache: RedisCache): pass
-
-class EmailService:
-    def __init__(self, config: AppConfig, logger: Logger): pass
-
-class NotificationService:
-    def __init__(self, email: EmailService, sms: SMSService): pass
-
-class OrderService:
-    def __init__(self,
-                 user_repo: UserRepository,
-                 payment: PaymentService,
-                 notification: NotificationService,
-                 audit: AuditService,
-                 logger: Logger): pass
-
-class OrderController:
-    def __init__(self,
-                 order_service: OrderService,
-                 auth: AuthService,
-                 validator: RequestValidator): pass
-
-# Register all services - depi handles the complex graph automatically
-services = ServiceCollection()
-services.add_singleton(AppConfig)
-services.add_singleton(Logger)
-services.add_singleton(DatabaseConnection)
-services.add_singleton(RedisCache)
-services.add_transient(UserRepository)
-services.add_transient(EmailService)
-services.add_transient(SMSService)
-services.add_transient(NotificationService)
-services.add_transient(PaymentService)
-services.add_transient(AuditService)
-services.add_transient(OrderService)
-services.add_transient(OrderController)
-services.add_transient(AuthService)
-services.add_transient(RequestValidator)
-
-provider = services.build_provider()
-
-# Single resolve call handles entire 13-service dependency tree
-controller = provider.resolve(OrderController)
-```
-
-### Advanced Factory Patterns
-
-`depi` supports sophisticated factory patterns for conditional creation, resource management, and dynamic configuration:
-
-```python
-# Dynamic database factory with connection pooling
-def database_factory(config: AppConfig, logger: Logger) -> DatabaseConnection:
-    if config.environment == 'production':
-        return ProductionDatabase(
-            connection_string=config.db_url,
-            pool_size=config.db_pool_size,
-            logger=logger
-        )
-    elif config.environment == 'testing':
-        return InMemoryDatabase(logger=logger)
-    else:
-        return DevelopmentDatabase(config.dev_db_path, logger=logger)
-
-# Repository factory with tenant isolation
-def tenant_repository_factory(db: DatabaseConnection,
-                             tenant_context: TenantContext) -> Repository:
-    return TenantRepository(
-        connection=db,
-        tenant_id=tenant_context.current_tenant_id,
-        schema=f"tenant_{tenant_context.current_tenant_id}"
-    )
-
-# HTTP client factory with retry policies
-def http_client_factory(config: AppConfig,
-                       logger: Logger,
-                       metrics: MetricsService) -> HttpClient:
-    client = HttpClient(
-        base_url=config.api_base_url,
-        timeout=config.api_timeout,
-        retry_count=config.api_retry_count
-    )
-    client.add_middleware(LoggingMiddleware(logger))
-    client.add_middleware(MetricsMiddleware(metrics))
-    return client
-
-services = ServiceCollection()
-services.add_singleton(DatabaseConnection, factory=database_factory)
-services.add_scoped(Repository, factory=tenant_repository_factory)
-services.add_singleton(HttpClient, factory=http_client_factory)
-```
-
-### Multi-Interface Registration
-
-Handle complex scenarios where services implement multiple interfaces or require different configurations:
-
-```python
-# Service implementing multiple interfaces
-class UnifiedService(IEmailService, ISMSService, IPushService):
-    def __init__(self, config: AppConfig, logger: Logger): pass
-
-# Register same instance for multiple interface types
-services = ServiceCollection()
-unified = UnifiedService(config, logger)
-services.add_singleton(IEmailService, instance=unified)
-services.add_singleton(ISMSService, instance=unified)
-services.add_singleton(IPushService, instance=unified)
-
-# Or use factory for lazy initialization
-def notification_factory(config: AppConfig, logger: Logger) -> UnifiedService:
-    return UnifiedService(config, logger)
-
-services.add_singleton(IEmailService, factory=notification_factory)
-services.add_singleton(ISMSService, factory=notification_factory)  # Same factory
-services.add_singleton(IPushService, factory=notification_factory)  # Same factory
-```
-
-### Conditional and Environment-Based Registration
-
-```python
-import os
-from enum import Enum
-
-class Environment(Enum):
-    DEVELOPMENT = "dev"
-    STAGING = "staging"
-    PRODUCTION = "prod"
-
-def configure_services(env: Environment) -> ServiceCollection:
-    services = ServiceCollection()
-
-    # Base services always registered
-    services.add_singleton(Logger)
-    services.add_singleton(AppConfig)
-
-    # Environment-specific implementations
-    if env == Environment.PRODUCTION:
-        services.add_singleton(IEmailService, ProductionEmailService)
-        services.add_singleton(ICache, RedisCache)
-        services.add_singleton(IFileStorage, S3Storage)
-        services.add_singleton(IPaymentProcessor, StripeProcessor)
-    elif env == Environment.STAGING:
-        services.add_singleton(IEmailService, StagingEmailService)
-        services.add_singleton(ICache, RedisCache)
-        services.add_singleton(IFileStorage, S3Storage)
-        services.add_singleton(IPaymentProcessor, MockPaymentProcessor)
-    else:  # Development
-        services.add_singleton(IEmailService, MockEmailService)
-        services.add_singleton(ICache, InMemoryCache)
-        services.add_singleton(IFileStorage, LocalFileStorage)
-        services.add_singleton(IPaymentProcessor, MockPaymentProcessor)
-
-    return services
-
-# Usage
-env = Environment(os.getenv('ENVIRONMENT', 'dev'))
-services = configure_services(env)
-provider = services.build_provider()
-```
-
-### Testing with Complex Mocking
-
-```python
-# Production service graph
-class ProductionServices:
-    @staticmethod
-    def configure() -> ServiceCollection:
-        services = ServiceCollection()
-        services.add_singleton(DatabaseConnection)
-        services.add_singleton(RedisCache)
-        services.add_singleton(EmailService)
-        services.add_transient(UserService)
-        services.add_transient(OrderService)
-        return services
-
-# Test overrides for integration testing
-class TestServices:
-    @staticmethod
-    def configure() -> ServiceCollection:
-        services = ServiceCollection()
-
-        # Use real implementations for core logic
-        services.add_transient(UserService)
-        services.add_transient(OrderService)
-
-        # Mock external dependencies
-        services.add_singleton(DatabaseConnection, instance=MockDatabase())
-        services.add_singleton(RedisCache, instance=MockCache())
-        services.add_singleton(EmailService, instance=MockEmailService())
-
-        return services
-
-# Unit test with complete service replacement
-class UnitTestServices:
-    @staticmethod
-    def configure() -> ServiceCollection:
-        services = ServiceCollection()
-
-        # Mock everything for isolated testing
-        services.add_singleton(DatabaseConnection, instance=Mock())
-        services.add_singleton(RedisCache, instance=Mock())
-        services.add_singleton(EmailService, instance=Mock())
-        services.add_singleton(UserService, instance=Mock())
-        services.add_singleton(OrderService, instance=Mock())
-
-        return services
-
-# Usage in tests
-def test_order_processing():
-    test_provider = TestServices.configure().build_provider()
-    di = DependencyInjector(test_provider)
-
-    order_service = test_provider.resolve(OrderService)
-    # Test with real business logic, mocked dependencies
-```
-
-## Lifecycle Management
-
-- **Transient**: New instance per resolution
-- **Singleton**: Single instance across application lifetime
-- **Scoped**: Single instance per scope (e.g., HTTP request)
-
-Scoped lifetimes automatically clean up resources when the scope ends, preventing memory leaks in long-running applications.
-
-## Performance Considerations
-
-Resolution time scales O(n) with dependency depth, maintaining consistent performance even with complex enterprise architectures. For optimal performance with intricate dependency graphs:
-
-- **Service Design**: Prefer constructor injection over property injection for better graph analysis
-- **Lifetime Strategy**: Use singletons for expensive-to-create services and shared resources
-- **Graph Optimization**: Minimize unnecessary dependency chain depth while maintaining clean architecture
-- **Factory Efficiency**: Consider factory patterns for conditional creation and expensive resource initialization
-- **Bulk Resolution**: Resolve service graphs at application startup rather than per-request for better amortization
-- **Memory Patterns**: Complex graphs with 100+ services typically use <50MB additional memory for metadata
-
-**Complex Graph Performance**: Applications with 50+ interdependent services show minimal performance degradation compared to simple scenarios, demonstrating `depi`'s efficient graph traversal algorithms.
+Adapters build against `depi.integration.BaseInjector` and `depi.context`, and pin `pydepi>=0.1,<0.2`.
 
 ## Roadmap
 
+- **Errors**: a real exception hierarchy in place of bare `Exception`, and full dependency chains in cycle messages
 - **Performance**: Cython optimization targeting ~90-100ns resolution to match `dependency-injector`
-- **Memory**: Optimize metadata storage and allocation patterns using `NamedTuple` structures
-- **Frameworks**: Django and aiohttp integration
-- **Tooling**: Debug visualizations and dependency graph analysis
+- **Memory**: optimize metadata storage and allocation patterns
+- **Frameworks**: aiohttp integration
+- **Tooling**: debug visualizations and dependency graph analysis
 
 ## Contributing
 
-Issues and contributions welcome on [GitHub](https://github.com/yourusername/depi). The project follows semantic versioning and maintains backward compatibility within major versions.
+Issues and contributions welcome on [GitHub](https://github.com/danleonard-nj/depi). The project follows semantic versioning and maintains backward compatibility within major versions.
 
 ## License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT
