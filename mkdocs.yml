@@ -1,0 +1,137 @@
+site_name: depi
+site_description: A type-hint driven dependency injection container for Python that stays at the composition boundary.
+site_url: https://danleonard-nj.github.io/depi/
+copyright: MIT licensed. Documentation built from the source tree.
+
+repo_url: https://github.com/danleonard-nj/depi
+repo_name: danleonard-nj/depi
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+extra_css:
+  - assets/extra.css
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - navigation.instant
+    - navigation.instant.prefetch
+    - toc.follow
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to system preference
+
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths:
+            - packages/depi-core
+            - packages/depi-flask
+            - packages/depi-quart
+            - packages/depi-fastapi
+            - packages/depi-django
+          inventories:
+            - https://docs.python.org/3/objects.inv
+          options:
+            docstring_style: google
+            docstring_section_style: list
+            members_order: source
+            filters: ["!^_"]
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            show_root_heading: true
+            show_root_full_path: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_source: true
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - tables
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Concepts:
+      - concepts/index.md
+      - Registration: concepts/registration.md
+      - Resolution: concepts/resolution.md
+      - Lifetimes and scopes: concepts/lifetimes-and-scopes.md
+      - Factories: concepts/factories.md
+      - Async: concepts/async.md
+      - Disposal: concepts/disposal.md
+      - The dependency graph: concepts/dependency-graph.md
+      - Errors: concepts/errors.md
+  - Architecture: architecture/index.md
+  - Guides:
+      - guides/index.md
+      - Testing with replacement dependencies: guides/testing.md
+      - Async dependencies: guides/async-dependencies.md
+      - Third-party clients and factories: guides/third-party-clients.md
+      - Typed configuration: guides/typed-configuration.md
+      - Organizing a large container: guides/organizing-registrations.md
+      - Handling errors at startup: guides/error-handling.md
+      - Releasing resources: guides/resource-teardown.md
+  - Integrations:
+      - integrations/index.md
+      - Flask: integrations/flask.md
+      - Quart: integrations/quart.md
+      - FastAPI: integrations/fastapi.md
+      - Django: integrations/django.md
+  - Comparison: comparison/index.md
+  - API reference:
+      - api/index.md
+      - Container: api/container.md
+      - Ambient scope: api/context.md
+      - Exceptions: api/exceptions.md
+      - Integration base: api/integration.md
+      - Flask adapter: api/flask.md
+      - Quart adapter: api/quart.md
+      - FastAPI adapter: api/fastapi.md
+      - Django adapter: api/django.md
+  - About:
+      - about/index.md
+      - Limitations and non-goals: about/limitations.md
+      - Changelog: about/changelog.md

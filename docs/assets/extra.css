@@ -1,0 +1,18 @@
+/* Home-page wordmark. Kept modest: it sits above the H1, not instead of it. */
+.depi-hero {
+  margin: 0.6rem 0 1.4rem;
+}
+
+.depi-hero img {
+  max-width: min(320px, 68%);
+  height: auto;
+}
+
+/* The wordmark is dark navy on transparent, which goes muddy on the slate
+   background. Give it a light card in dark mode only; light mode leaves it
+   blending into the page. */
+[data-md-color-scheme="slate"] .depi-hero img {
+  background: #ffffff;
+  padding: 0.5rem 1.1rem;
+  border-radius: 14px;
+}
