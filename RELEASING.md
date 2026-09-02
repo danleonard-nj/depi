@@ -16,15 +16,15 @@ Five distributions, released independently. Publishing uses **PyPI Trusted Publi
 
 ### 1. Create the GitHub environments
 
-Repository → **Settings** → **Environments** → **New environment**. Create one per distribution:
+Repository → **Settings** → **Environments** → **New environment**. Create one per distribution, named after the distribution:
 
-- `pypi-pydepi`
-- `pypi-pydepi-flask`
-- `pypi-pydepi-quart`
-- `pypi-pydepi-fastapi`
-- `pypi-pydepi-django`
+- `pydepi`
+- `pydepi-flask`
+- `pydepi-quart`
+- `pydepi-fastapi`
+- `pydepi-django`
 
-PyPI treats owner/repo/workflow/environment as the publisher identity, so five projects publishing from one workflow file need five distinct environments. That also narrows blast radius: a run in `pypi-pydepi-flask` can only mint a token for that one project.
+PyPI treats owner/repo/workflow/environment as the publisher identity, so five projects publishing from one workflow file need five distinct environments. That also narrows blast radius: a run in the `pydepi-flask` environment can only mint a token for that one project.
 
 The name must match what you enter on PyPI exactly. Consider adding yourself as a **required reviewer** on each — that turns every publish into a one-click approval and makes an accidental tag push harmless.
 
@@ -38,13 +38,13 @@ Go to <https://pypi.org/manage/account/publishing/> and add a pending publisher 
 
 Owner is `danleonard-nj`, Repository name is `depi`, and Workflow name is `release.yml` for all five. Only these two fields change:
 
-| PyPI Project Name | Environment name        |
-| ----------------- | ----------------------- |
-| `pydepi`          | `pypi-pydepi`           |
-| `pydepi-flask`    | `pypi-pydepi-flask`     |
-| `pydepi-quart`    | `pypi-pydepi-quart`     |
-| `pydepi-fastapi`  | `pypi-pydepi-fastapi`   |
-| `pydepi-django`   | `pypi-pydepi-django`    |
+| PyPI Project Name | Environment name |
+| ----------------- | ---------------- |
+| `pydepi`          | `pydepi`         |
+| `pydepi-flask`    | `pydepi-flask`   |
+| `pydepi-quart`    | `pydepi-quart`   |
+| `pydepi-fastapi`  | `pydepi-fastapi` |
+| `pydepi-django`   | `pydepi-django`  |
 
 Workflow name is the **filename**, not the `name:` inside the file — `release.yml`, not `Release`. The environment must differ per project: PyPI rejects a second publisher reusing the same owner/repo/workflow/environment combination.
 
@@ -52,7 +52,7 @@ All five names were free when this was written. If one has been taken since, PyP
 
 ### 3. Optional: the same again on TestPyPI
 
-Only if you want a rehearsal. TestPyPI is a separate site with a separate account: <https://test.pypi.org/manage/account/publishing/>. Same pattern, with the environment prefixed `testpypi-` instead — e.g. project `pydepi`, environment `testpypi-pydepi`. Create the matching GitHub environment too.
+Only if you want a rehearsal. TestPyPI is a separate site with a separate account: <https://test.pypi.org/manage/account/publishing/>. Same pattern, with the environment prefixed `testpypi-` — e.g. project `pydepi`, environment `testpypi-pydepi`. The prefix keeps the two indexes' environments distinct. Create the matching GitHub environment too.
 
 Worth doing once for `pydepi` alone, to watch the pipeline work end to end. Not worth doing for all five.
 
@@ -109,7 +109,7 @@ git tag pydepi-quart-v0.1.0 && git push origin pydepi-quart-v0.1.0
 
 ### Wave 2 — register the remaining two, then tag
 
-All three slots are now free. Back to <https://pypi.org/manage/account/publishing/>, add pending publishers for `pydepi-fastapi` (environment `pypi-pydepi-fastapi`) and `pydepi-django` (environment `pypi-pydepi-django`), then:
+All three slots are now free. Back to <https://pypi.org/manage/account/publishing/>, add pending publishers for `pydepi-fastapi` (environment `pydepi-fastapi`) and `pydepi-django` (environment `pydepi-django`), then:
 
 ```bash
 git tag pydepi-fastapi-v0.1.0 && git push origin pydepi-fastapi-v0.1.0

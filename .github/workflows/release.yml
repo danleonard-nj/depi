@@ -103,10 +103,14 @@ jobs:
 
           # One GitHub environment per (index, project). PyPI treats the
           # owner/repo/workflow/environment tuple as the publisher identity, so
-          # five projects publishing from this one workflow file need five
-          # distinct environments. It also narrows blast radius: a run in
-          # pypi-pydepi-flask can only ever mint a token for that project.
-          environment = f'{repository}-{package}'
+          # five projects sharing this one workflow file need five distinct
+          # environments. That is also what lets the filename be shared, and it
+          # narrows blast radius: a run in the pydepi-flask environment can only
+          # ever mint a token for that project.
+          #
+          # For PyPI the environment is just the distribution name. TestPyPI is a
+          # separate index, so its environments are prefixed to keep them apart.
+          environment = package if repository == 'pypi' else f'{repository}-{package}'
 
           print(f'package={package}')
           print(f'directory={directory}')
