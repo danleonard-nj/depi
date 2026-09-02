@@ -27,6 +27,14 @@ requires-python = ">=3.10"
 # aliases for installing them.
 dependencies = []
 
+# Convenience aliases only. `pip install pydepi-flask` is the honest form --
+# these are separate distributions, not features of core.
+#
+# Deliberately unversioned: the compatibility constraint already exists in the
+# other direction (each adapter pins pydepi>=0.1,<0.2), so pip resolves a
+# workable pair from the adapter side. Adding a bound here too would mean
+# widening an adapter's range required a core release -- exactly the coupling
+# the split removed.
 [project.optional-dependencies]
 flask = ["pydepi-flask"]
 quart = ["pydepi-quart"]

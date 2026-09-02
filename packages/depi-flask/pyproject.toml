@@ -6,8 +6,21 @@ build-backend = "setuptools.build_meta"
 name = "pydepi-flask"
 version = "0.1.0"
 description = "Flask integration for pydepi"
+readme = "README.md"
 license = {text = "MIT"}
 authors = [{name = "Dan Leonard"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: Flask",
+    "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+]
+keywords = ["dependency-injection", "di", "ioc", "flask"]
 requires-python = ">=3.10"
 dependencies = [
     # Pinned to a compatible core range: adapters build against depi.integration

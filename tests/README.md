@@ -23,10 +23,18 @@ pytest tests/integrations
 Needs the adapters installed (`pip install -r requirements-dev.txt`). In CI this should be one job per framework, with a version matrix — that is where framework version ranges belong, not in package metadata.
 
 ```bash
-pytest tests/benchmarks
+pytest tests/benchmarks --benchmark-enable --benchmark-warmup=on --benchmark-json=tests/benchmark_results.json
 ```
 
-Needs `dependency-injector` and `psutil`. Results are informational; these do not gate merges.
+```bash
+python tests/plot_benchmarks.py tests/benchmark_results.json
+```
+
+Needs `dependency-injector` and `psutil`. Results are informational and never gate a merge.
+
+The second command regenerates `benchmarks.png` for the README. It replaced a notebook that read a gitignored 50MB artifact, so the chart is now reproducible from a documented command.
+
+**Absolute timings are load-sensitive** — repeat runs on the same machine have differed by 8-54%. The ratio between the two libraries held within a few percent across those same runs, so that is the figure worth quoting.
 
 ## Conventions
 

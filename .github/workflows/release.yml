@@ -1,0 +1,195 @@
+name: Release
+
+# Publishes ONE package per run, so the five distributions keep independent
+# release cadences -- shipping a FastAPI adapter fix must not require cutting a
+# core release.
+#
+# Uses PyPI Trusted Publishing (OIDC): no API token is stored in this repo.
+# PyPI is configured to trust this specific workflow file, in this repo, running
+# in the named environment. See RELEASING.md for the one-time setup.
+#
+# Tag format is <distribution>-v<version>, e.g.
+#     pydepi-v0.1.0            -> packages/depi-core
+#     pydepi-flask-v0.2.1      -> packages/depi-flask
+
+on:
+  push:
+    tags:
+      - "pydepi-v*"
+      - "pydepi-flask-v*"
+      - "pydepi-quart-v*"
+      - "pydepi-fastapi-v*"
+      - "pydepi-django-v*"
+  workflow_dispatch:
+    inputs:
+      package:
+        description: Distribution to publish
+        required: true
+        type: choice
+        options:
+          - pydepi
+          - pydepi-flask
+          - pydepi-quart
+          - pydepi-fastapi
+          - pydepi-django
+      repository:
+        description: Index to publish to
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build ${{ github.event.inputs.package || github.ref_name }}
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.resolve.outputs.package }}
+      directory: ${{ steps.resolve.outputs.directory }}
+      module: ${{ steps.resolve.outputs.module }}
+      version: ${{ steps.resolve.outputs.version }}
+      repository: ${{ steps.resolve.outputs.repository }}
+      environment: ${{ steps.resolve.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve package from tag or input
+        id: resolve
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          EVENT: ${{ github.event_name }}
+          INPUT_PACKAGE: ${{ github.event.inputs.package }}
+          INPUT_REPOSITORY: ${{ github.event.inputs.repository }}
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import os, re, sys
+
+          # Distribution name -> source directory. Kept explicit rather than
+          # derived, so a typo fails loudly instead of publishing the wrong thing.
+          # The import name is NOT derivable from the distribution name here
+          # (pydepi-flask imports as depi_flask), so both are spelled out.
+          DIRS = {
+              'pydepi': ('packages/depi-core', 'depi'),
+              'pydepi-flask': ('packages/depi-flask', 'depi_flask'),
+              'pydepi-quart': ('packages/depi-quart', 'depi_quart'),
+              'pydepi-fastapi': ('packages/depi-fastapi', 'depi_fastapi'),
+              'pydepi-django': ('packages/depi-django', 'depi_django'),
+          }
+
+          if os.environ['EVENT'] == 'workflow_dispatch':
+              package = os.environ['INPUT_PACKAGE']
+              repository = os.environ['INPUT_REPOSITORY']
+              version = ''            # taken from pyproject, nothing to cross-check
+          else:
+              ref = os.environ['REF_NAME']
+              m = re.fullmatch(r'(pydepi(?:-(?:flask|quart|fastapi|django))?)-v(.+)', ref)
+              if not m:
+                  sys.exit(f'tag {ref!r} is not <distribution>-v<version>')
+              package, version = m.group(1), m.group(2)
+              repository = 'pypi'
+
+          if package not in DIRS:
+              sys.exit(f'unknown distribution {package!r}')
+
+          directory, module = DIRS[package]
+
+          # One GitHub environment per (index, project). PyPI treats the
+          # owner/repo/workflow/environment tuple as the publisher identity, so
+          # five projects publishing from this one workflow file need five
+          # distinct environments. It also narrows blast radius: a run in
+          # pypi-pydepi-flask can only ever mint a token for that project.
+          environment = f'{repository}-{package}'
+
+          print(f'package={package}')
+          print(f'directory={directory}')
+          print(f'module={module}')
+          print(f'version={version}')
+          print(f'repository={repository}')
+          print(f'environment={environment}')
+          PY
+
+      - name: Tag version must match pyproject version
+        if: steps.resolve.outputs.version != ''
+        env:
+          DIRECTORY: ${{ steps.resolve.outputs.directory }}
+          EXPECTED: ${{ steps.resolve.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+
+          path = os.path.join(os.environ['DIRECTORY'], 'pyproject.toml')
+          declared = tomllib.load(open(path, 'rb'))['project']['version']
+          expected = os.environ['EXPECTED']
+          if declared != expected:
+              sys.exit(
+                  f'tag says v{expected} but {path} declares {declared}. '
+                  f'Bump the version and re-tag; a mismatch here means the wrong '
+                  f'artifact ships under the right name.'
+              )
+          print(f'OK: tag and {path} agree on {declared}')
+          PY
+
+      - name: Build sdist and wheel
+        run: |
+          pip install build
+          python -m build --outdir dist "${{ steps.resolve.outputs.directory }}"
+
+      - name: Validate metadata
+        run: |
+          pip install twine
+          twine check --strict dist/*
+
+      - name: Smoke test the built wheel
+        # Install the actual artifact, not the source tree, so a packaging
+        # mistake fails here rather than on someone else's machine.
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          MODULE: ${{ steps.resolve.outputs.module }}
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/*.whl
+          if [ "$PACKAGE" = "pydepi" ]; then
+            # Core additionally has to prove it still drags in nothing.
+            /tmp/smoke/bin/python scripts/check_core_purity.py
+          else
+            /tmp/smoke/bin/python -c "import $MODULE; print('imported', $MODULE.__name__)"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ steps.resolve.outputs.package }}
+          path: dist/
+
+  publish:
+    name: publish ${{ needs.build.outputs.package }} to ${{ needs.build.outputs.repository }}
+    needs: build
+    runs-on: ubuntu-latest
+    environment: ${{ needs.build.outputs.environment }}
+    permissions:
+      # Required for Trusted Publishing. This is the only credential involved --
+      # a short-lived OIDC token, minted per run, that PyPI exchanges for upload
+      # rights. Nothing long-lived is stored in the repo.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      - name: Publish to TestPyPI
+        if: needs.build.outputs.repository == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      - name: Publish to PyPI
+        if: needs.build.outputs.repository == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

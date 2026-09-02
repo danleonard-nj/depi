@@ -157,6 +157,21 @@ def test_non_http_asgi_traffic_passes_through(app, provider):
     assert DISPOSED == []
 
 
+def test_middleware_accepts_app_as_a_keyword_argument(app, provider):
+    """
+    Starlette <= 0.27 instantiates middleware as cls(app=..., **options), with
+    app passed by KEYWORD; newer Starlette passes it positionally. A middleware
+    whose first parameter is named anything else breaks every FastAPI at or
+    below the declared floor, and does so at request time rather than at setup.
+    """
+    injector = FastAPIInjector(provider)
+    injector.setup(app)
+
+    middleware_cls = app.user_middleware[0].cls
+    instance = middleware_cls(app=lambda *a: None)   # must not raise
+    assert instance is not None
+
+
 def test_autowire_is_rejected_with_an_explanation(provider):
     with pytest.raises(ValueError, match='does not support autowire'):
         FastAPIInjector(provider, autowire=True)

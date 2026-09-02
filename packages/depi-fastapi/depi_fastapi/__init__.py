@@ -58,18 +58,22 @@ class FastAPIInjector(BaseInjector):
         provider = self._provider
 
         class _DepiScopeMiddleware:
-            def __init__(self, asgi_app):
-                self.asgi_app = asgi_app
+            # The parameter must be named `app`: Starlette <= 0.27 instantiates
+            # middleware as cls(app=..., **options) with app as a KEYWORD
+            # argument, while newer Starlette passes it positionally. Naming it
+            # anything else breaks every FastAPI at or below the declared floor.
+            def __init__(self, app):
+                self.app = app
 
             async def __call__(self, scope, receive, send):
                 if scope['type'] not in ('http', 'websocket'):
-                    await self.asgi_app(scope, receive, send)
+                    await self.app(scope, receive, send)
                     return
 
                 di_scope = provider.create_scope()
                 token = set_current_scope(di_scope)
                 try:
-                    await self.asgi_app(scope, receive, send)
+                    await self.app(scope, receive, send)
                 finally:
                     reset_current_scope(token)
                     await di_scope.__aexit__(None, None, None)

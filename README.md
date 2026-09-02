@@ -24,17 +24,13 @@ Tests for every package live together under `tests/`, so an adapter breaking aga
 pip install pydepi
 ```
 
-`pip install pydepi` pulls in nothing else. Add a framework adapter with an extra, or install it directly:
+`pip install pydepi` pulls in nothing else. Framework support is a separate install:
 
 ```bash
-pip install pydepi[flask]
+pip install pydepi-flask
 ```
 
-```bash
-pip install pydepi-fastapi
-```
-
-Extras available: `flask`, `quart`, `fastapi`, `django`, and `all`.
+Extras are also accepted as an alias — `pydepi[flask]`, `[quart]`, `[fastapi]`, `[django]`, `[all]` — but the name above is the more accurate form, since these are distinct distributions with their own versions rather than optional features of core.
 
 ## Quick Start
 
@@ -309,20 +305,32 @@ Reaching for the request scope outside a request raises `NoActiveScopeError`, wh
 
 ## Performance
 
-Benchmarked on 12th Gen Intel i7-12800H with Python 3.11.5:
+Measured with `pytest-benchmark` on a 12th Gen Intel i7-12800H, Python 3.11.5, against `dependency-injector` 4.48.1:
 
-| Metric                  | `depi` | `dependency-injector` |
-| ----------------------- | ------ | --------------------- |
-| Simple Resolution (ns)  | 211.0  | 90.9                  |
-| Complex Resolution (ns) | 208.5  | 108.3                 |
-| Memory Allocation (µs)  | 15.69  | 9.04                  |
-| Setup Time (µs)         | 21.33  | 95.39                 |
-
-**Analysis**: `depi` trades 2.3x resolution time for zero-configuration auto-resolution of complex dependency graphs. Setup is 4.5x faster. Performance stays consistent with deep dependency chains (10+ levels) and factory patterns.
+| Metric                  | `depi` | `dependency-injector` | Ratio             |
+| ----------------------- | ------ | --------------------- | ----------------- |
+| Simple resolution (ns)  | 308.4  | 121.9                 | 2.5x slower       |
+| Complex resolution (ns) | 284.0  | 117.5                 | 2.4x slower       |
+| Container setup (µs)    | 30.0   | 149.4                 | **5.0x faster**   |
+| Memory allocation (µs)  | 18.4   | 9.2                   | 2.0x slower       |
 
 ![depi vs dependency-injector benchmarks](tests/benchmarks.png)
 
-Reproduce with `pytest tests/benchmarks`. Signature inspection for autowired views happens once at decoration time, not per request.
+**Read the ratios, not the absolute figures.** Repeat runs on the same machine have differed by 8–54% depending on what else was running, while the ratios above held within a few percent across runs. Anyone reproducing these on their own hardware should expect different nanosecond counts and similar proportions.
+
+**What the trade buys**: roughly 2.5x the per-resolution cost of `dependency-injector`, in exchange for resolving dependency graphs from type annotations with no wiring configuration. Setup is ~5x faster, which favours workloads that build containers often — test suites especially. Resolution cost stays flat as graphs deepen: the complex-graph figure is no worse than the simple one.
+
+Reproduce:
+
+```bash
+pytest tests/benchmarks --benchmark-enable --benchmark-warmup=on --benchmark-json=tests/benchmark_results.json
+```
+
+```bash
+python tests/plot_benchmarks.py tests/benchmark_results.json
+```
+
+Signature inspection for autowired views happens once at decoration time, not per request.
 
 ## Thread Safety
 

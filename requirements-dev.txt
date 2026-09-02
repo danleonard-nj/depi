@@ -17,6 +17,7 @@ pytest-benchmark>=4.0
 httpx>=0.27              # required by fastapi.testclient
 ruff>=0.1
 
-# benchmark comparison target only
+# benchmark comparison target, and chart rendering for tests/plot_benchmarks.py
 dependency-injector>=4.41
 psutil>=5.9
+matplotlib>=3.7

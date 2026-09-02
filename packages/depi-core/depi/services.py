@@ -576,7 +576,9 @@ class ServiceProvider:
                     # support coroutine factories
                     if asyncio.iscoroutine(inst):
                         try:
-                            loop = asyncio.get_running_loop()
+                            # Probe only: raises RuntimeError when there is no
+                            # running loop, which the except branch below handles.
+                            asyncio.get_running_loop()
                             # run in separate thread if already in event loop
                             import concurrent.futures
                             with concurrent.futures.ThreadPoolExecutor() as ex:
