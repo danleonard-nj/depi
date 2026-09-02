@@ -19,10 +19,12 @@ theme:
     - content.code.annotate
     - content.tabs.link
     - content.action.edit
-    - navigation.tabs
-    - navigation.sections
+    # Persistent left sidebar with the full nav tree. Sections collapse; the
+    # active one auto-expands. No top tabs -- one navigation surface, not two.
+    - navigation.indexes
     - navigation.top
     - navigation.tracking
+    - navigation.footer
     - navigation.instant
     - navigation.instant.prefetch
     - toc.follow
@@ -94,6 +96,13 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Tutorial:
+      - tutorial/index.md
+      - 1. The domain: tutorial/1-the-domain.md
+      - 2. The application service: tutorial/2-the-service.md
+      - 3. Wiring it together: tutorial/3-wiring.md
+      - 4. Serving it over HTTP: tutorial/4-serving.md
+      - 5. Tests: tutorial/5-testing.md
   - Concepts:
       - concepts/index.md
       - Registration: concepts/registration.md

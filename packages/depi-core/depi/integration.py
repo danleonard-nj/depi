@@ -43,9 +43,18 @@ def injectable_parameters(
     """
     try:
         parameters = get_signature(fn).parameters
-    except (ValueError, TypeError, NameError):
-        # Unintrospectable callable (some builtins) or an annotation that will
-        # not evaluate. Nothing to autowire; the caller degrades to no-op.
+    except Exception:
+        # Deliberately broad. Signatures are evaluated with eval_str=True, and
+        # under `from __future__ import annotations` every annotation is a
+        # string, so this can fail in many ways: an unimportable forward
+        # reference (NameError), a malformed one (SyntaxError), a dotted name
+        # whose attribute is missing (AttributeError), a builtin with no
+        # retrievable signature (ValueError).
+        #
+        # None of those are depi's to diagnose, and all of them happen at
+        # decoration time -- at import, before the app can even start. Claiming
+        # nothing lets the framework supply the parameter and report the real
+        # problem itself.
         return {}
 
     injectable = {}

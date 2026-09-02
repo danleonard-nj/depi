@@ -188,3 +188,97 @@ def test_explicitly_passed_scope_wins(app, provider):
 
     with provider.create_scope() as scope:
         assert view(provider=scope) == 'hello from config'
+
+
+# --------------------------------------------------------------------------
+# Request lifecycle under failure and concurrency
+# --------------------------------------------------------------------------
+
+def test_scope_is_disposed_when_the_view_raises(app, provider):
+    """Disposal happens in teardown_request, so a failing view still cleans up."""
+    injector = FlaskInjector(provider)
+    injector.setup(app)
+
+    @app.route('/boom')
+    @injector.inject
+    def boom(provider):
+        provider.resolve(Disposable)
+        raise RuntimeError('handler failed')
+
+    try:
+        app.test_client().get('/boom')
+    except RuntimeError:
+        pass
+
+    assert len(DISPOSED) == 1
+    with pytest.raises(NoActiveScopeError):
+        current_scope()
+
+
+def test_unmatched_route_does_not_break_teardown(app, provider):
+    """teardown_request runs for a 404 too; popping absent keys must be safe."""
+    injector = FlaskInjector(provider)
+    injector.setup(app)
+
+    assert app.test_client().get('/no-such-route').status_code == 404
+    assert DISPOSED == []
+
+
+def test_concurrent_requests_get_separate_scopes(app, provider):
+    """
+    Werkzeug serves requests on a thread pool. Each must see its own scope, and
+    none may observe another's.
+    """
+    import threading
+
+    injector = FlaskInjector(provider)
+    injector.setup(app)
+
+    @app.route('/id')
+    @injector.inject
+    def ident(provider):
+        return {'id': provider.resolve(RequestId).id}
+
+    seen = []
+
+    def hit():
+        with app.test_client() as client:
+            seen.append(client.get('/id').json['id'])
+
+    threads = [threading.Thread(target=hit) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(seen) == 8
+    assert len(set(seen)) == 8, 'threads shared a scope'
+
+
+def test_autowire_ignores_variadic_parameters(app, provider):
+    injector = FlaskInjector(provider, autowire=True)
+    injector.setup(app)
+
+    @app.route('/kw/<key>')
+    @injector.inject
+    def kw(key, greeter: Greeter, **extra):
+        return {'key': key, 'message': greeter.greet(), 'extra': sorted(extra)}
+
+    assert app.test_client().get('/kw/abc').json == {
+        'key': 'abc', 'message': 'hello from config', 'extra': []}
+
+
+def test_autowire_lets_the_caller_override_a_service(provider):
+    """Makes an autowired view unit-testable with a stub, without a request."""
+    injector = FlaskInjector(provider, autowire=True)
+
+    @injector.inject
+    def view(greeter: Greeter):
+        return greeter
+
+    class StubGreeter:
+        def greet(self):
+            return 'stubbed'
+
+    stub = StubGreeter()
+    assert view(greeter=stub) is stub

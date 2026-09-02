@@ -97,6 +97,8 @@ example, and marks the exact line where `depi` stops being imported.
 ## Where to go next
 
 - **[Getting started](getting-started.md)** — installation to a working example.
+- **[Tutorial](tutorial/index.md)** — build a small app (a URL shortener) across
+  the layers, wire it, serve it, test it.
 - **[Concepts](concepts/index.md)** — registration, resolution, lifetimes,
   scopes, factories, async, disposal, errors.
 - **[Architecture](architecture/index.md)** — the clean-architecture example and
