@@ -189,3 +189,67 @@ def test_inject_preserves_function_identity(provider):
 
     assert my_view.__name__ == 'my_view'
     assert my_view.__doc__ == 'Original docstring.'
+
+
+@pytest.mark.asyncio
+async def test_scope_is_disposed_when_the_view_raises(app, provider):
+    injector = QuartInjector(provider)
+    injector.setup(app)
+
+    @app.route('/boom')
+    @injector.inject
+    async def boom(provider):
+        provider.resolve(Disposable)
+        raise RuntimeError('handler failed')
+
+    # Quart is inconsistent across versions about what a failing view does to
+    # the test client: 0.19 and 0.20 let the exception propagate, while 0.18
+    # and 0.22+ turn it into a 500. Both are Quart's business. What depi has to
+    # guarantee either way is that the scope is torn down.
+    try:
+        await app.test_client().get('/boom')
+    except RuntimeError:
+        pass
+
+    assert len(DISPOSED) == 1
+    with pytest.raises(NoActiveScopeError):
+        current_scope()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_do_not_share_a_scope(app, provider):
+    """Quart handles each request in its own task, so scopes must not leak."""
+    import asyncio
+
+    injector = QuartInjector(provider)
+    injector.setup(app)
+
+    @app.route('/id')
+    @injector.inject
+    async def ident(provider):
+        first = provider.resolve(RequestId).id
+        await asyncio.sleep(0.01)
+        return {'first': first, 'second': provider.resolve(RequestId).id}
+
+    client = app.test_client()
+    responses = await asyncio.gather(*(client.get('/id') for _ in range(6)))
+    bodies = [await r.get_json() for r in responses]
+
+    assert all(b['first'] == b['second'] for b in bodies), 'a request lost its scope'
+    assert len({b['first'] for b in bodies}) == 6, 'requests shared a scope'
+
+
+@pytest.mark.asyncio
+async def test_autowire_lets_the_caller_override_a_service(provider):
+    injector = QuartInjector(provider, autowire=True)
+
+    @injector.inject
+    async def view(greeter: Greeter):
+        return greeter
+
+    class StubGreeter:
+        def greet(self):
+            return 'stubbed'
+
+    stub = StubGreeter()
+    assert await view(greeter=stub) is stub
