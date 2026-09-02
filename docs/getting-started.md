@@ -158,6 +158,7 @@ awaits async cleanup.
 - `provider.resolve(T)` builds `T` and everything it needs.
 - Scoped services need a scope; the scope disposes them on exit.
 
-Next: [Concepts](concepts/index.md) for the model in full, or
+Next: the [Tutorial](tutorial/index.md) builds a small app with this, step by
+step. Or go to [Concepts](concepts/index.md) for the model in full, or
 [Architecture](architecture/index.md) for how to structure an application around
 this without the container leaking into it.

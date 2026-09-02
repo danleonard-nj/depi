@@ -193,3 +193,81 @@ def test_fastapi_still_rejects_a_bare_service_annotation(app, provider):
         @app.get('/autowire')
         async def autowire(greeter: Greeter):
             return {}
+
+
+# --------------------------------------------------------------------------
+# The response lifecycle, which is why this is ASGI middleware
+# --------------------------------------------------------------------------
+
+def test_background_tasks_run_before_the_scope_is_disposed(app, provider):
+    """
+    The reason for pure ASGI middleware rather than an @app.middleware("http")
+    decorator: background tasks run as part of the response cycle, so anything
+    they captured from the scope must still be usable.
+    """
+    from fastapi import BackgroundTasks
+
+    injector = FastAPIInjector(provider)
+    injector.setup(app)
+
+    observed = []
+
+    @app.get('/bg')
+    async def bg(tasks: BackgroundTasks, scope=Depends(injector.get_scope)):
+        disposable = scope.resolve(Disposable)
+
+        def after():
+            observed.append(('task', disposable.disposed))
+
+        tasks.add_task(after)
+        return {'ok': True}
+
+    TestClient(app).get('/bg')
+
+    assert observed == [('task', False)], 'scope was torn down before the task ran'
+    assert len(DISPOSED) == 1, 'scope was never disposed'
+
+
+def test_scope_survives_a_streaming_response_body(app, provider):
+    """Disposal must wait for the body to finish, not for the handler to return."""
+    from fastapi.responses import StreamingResponse
+
+    injector = FastAPIInjector(provider)
+    injector.setup(app)
+
+    @app.get('/stream')
+    async def stream(scope=Depends(injector.get_scope)):
+        disposable = scope.resolve(Disposable)
+
+        async def chunks():
+            for index in range(3):
+                yield f'{index}:{disposable.disposed} '
+
+        return StreamingResponse(chunks(), media_type='text/plain')
+
+    body = TestClient(app).get('/stream').text
+
+    assert body.strip() == '0:False 1:False 2:False'
+    assert len(DISPOSED) == 1
+
+
+def test_websocket_connections_get_their_own_scope(app, provider):
+    from fastapi import WebSocket
+
+    injector = FastAPIInjector(provider)
+    injector.setup(app)
+
+    @app.websocket('/ws')
+    async def socket(websocket: WebSocket):
+        await websocket.accept()
+        scope = injector.get_scope()
+        first = scope.resolve(RequestId)
+        second = scope.resolve(RequestId)
+        await websocket.send_json({'same_instance': first is second})
+        await websocket.close()
+
+    with TestClient(app).websocket_connect('/ws') as connection:
+        assert connection.receive_json() == {'same_instance': True}
+
+    with pytest.raises(NoActiveScopeError):
+        current_scope()

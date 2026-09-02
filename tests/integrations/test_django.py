@@ -164,3 +164,106 @@ def test_middleware_matches_an_async_get_response():
         return None
 
     assert iscoroutinefunction(DepiScopeMiddleware(async_get_response))
+
+
+# --------------------------------------------------------------------------
+# The async request path
+#
+# Django's async middleware is what runs under ASGI, and it is a separate code
+# path from the sync one. Driving the middleware directly exercises it without
+# standing up an ASGI server.
+# --------------------------------------------------------------------------
+
+class AsyncResource:
+    """Scoped, with async cleanup, to prove __aexit__ is awaited."""
+
+    def __init__(self):
+        self.cleaned = False
+
+    async def __aexit__(self, *exc):
+        self.cleaned = True
+        DISPOSED.append('aexit')
+
+
+@pytest.fixture
+def async_provider():
+    collection = ServiceCollection()
+    collection.add_singleton(Config)
+    collection.add_scoped(RequestId)
+    collection.add_scoped(TrackedDisposable)
+    collection.add_scoped(AsyncResource)
+    collection.add_transient(Greeter)
+    return collection.build_provider()
+
+
+@pytest.mark.asyncio
+async def test_async_middleware_binds_and_disposes_a_scope(async_provider):
+    DjangoInjector(async_provider).setup()
+    DISPOSED.clear()
+
+    async def get_response(request):
+        scope = current_scope()
+        scope.resolve(AsyncResource)
+        scope.resolve(TrackedDisposable)
+        return 'response'
+
+    middleware = DepiScopeMiddleware(get_response)
+    assert await middleware(object()) == 'response'
+
+    # Async cleanup is awaited before synchronous disposal.
+    assert DISPOSED[0] == 'aexit'
+    assert len(DISPOSED) == 2
+    with pytest.raises(NoActiveScopeError):
+        current_scope()
+
+
+@pytest.mark.asyncio
+async def test_async_middleware_disposes_when_the_view_raises(async_provider):
+    DjangoInjector(async_provider).setup()
+    DISPOSED.clear()
+
+    async def get_response(request):
+        current_scope().resolve(TrackedDisposable)
+        raise RuntimeError('view failed')
+
+    middleware = DepiScopeMiddleware(get_response)
+    with pytest.raises(RuntimeError, match='view failed'):
+        await middleware(object())
+
+    assert DISPOSED, 'scope was not disposed when the view raised'
+    with pytest.raises(NoActiveScopeError):
+        current_scope()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_async_requests_do_not_share_a_scope(async_provider):
+    """
+    Each task copies the context at creation, so a scope bound inside one task
+    must stay invisible to the others and survive its own awaits.
+    """
+    import asyncio
+
+    DjangoInjector(async_provider).setup()
+    observed = []
+
+    async def get_response(request):
+        before = current_scope()
+        mine = before.resolve(RequestId)
+        await asyncio.sleep(0.01)          # force the tasks to interleave
+        after = current_scope()
+        observed.append({
+            'stable': before is after,
+            'instance_stable': after.resolve(RequestId) is mine,
+            'id': mine.id,
+        })
+        return None
+
+    middleware = DepiScopeMiddleware(get_response)
+    await asyncio.gather(*(middleware(object()) for _ in range(6)))
+
+    assert len(observed) == 6
+    assert all(o['stable'] for o in observed), 'a task lost its scope across an await'
+    assert all(o['instance_stable'] for o in observed)
+    assert len({o['id'] for o in observed}) == 6, 'tasks shared a scope'
+    with pytest.raises(NoActiveScopeError):
+        current_scope()

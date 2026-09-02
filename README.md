@@ -91,6 +91,15 @@ with provider.create_scope() as scope:
 
 Async cleanup is supported too — `async with provider.create_scope()` awaits `__aexit__` on scoped instances before disposing them.
 
+### What a scope does and does not own
+
+A scope disposes **only its scoped instances**. Two deliberate consequences:
+
+- **Transients are not disposed by the scope.** This diverges from `Microsoft.Extensions.DependencyInjection`, which tracks transient `IDisposable`s on the scope that created them — a well-known way to accumulate objects for the lifetime of a long-lived scope. In `depi`, a transient's lifetime belongs to whoever asked for it. If a transient holds a resource, manage it yourself (`with`, `try/finally`, or make it scoped).
+- **Singletons are never disposed by a scope**, since they outlive it. They belong to the provider.
+
+A disposer that raises does not abort the rest: the failure is logged and disposal continues, because a scope is torn down inside a framework's teardown hook where an escaping exception would surface somewhere unhelpful.
+
 ## Framework Integrations
 
 Every adapter does the same three things: open a scope per request, bind it to the ambient context, and dispose it when the request ends. What differs is how the scope reaches your view.
