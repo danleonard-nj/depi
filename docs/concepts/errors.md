@@ -8,19 +8,18 @@ application can catch `depi`'s failures without catching everything else.
 The hierarchy is grouped by *when* a failure happens, because that maps to who
 fixes it:
 
-```text
-DepiError
-├── RegistrationError          the container was described wrongly — startup
-│   ├── MissingAnnotationError
-│   ├── CircularDependencyError
-│   ├── InvalidLifetimeError
-│   └── UnknownLifetimeError
-└── ResolutionError            it was asked for something it could not produce
-    ├── UnregisteredDependencyError
-    ├── ScopeRequiredError
-    └── AsyncFactoryError
-
-NoActiveScopeError             DepiError + RuntimeError
+```mermaid
+flowchart TD
+    DepiError --> RegistrationError["RegistrationError<br/>(the wiring is wrong — fails at startup)"]
+    DepiError --> ResolutionError["ResolutionError<br/>(could not build what was asked)"]
+    RegistrationError --> MissingAnnotationError
+    RegistrationError --> CircularDependencyError
+    RegistrationError --> InvalidLifetimeError
+    RegistrationError --> UnknownLifetimeError
+    ResolutionError --> UnregisteredDependencyError
+    ResolutionError --> ScopeRequiredError
+    ResolutionError --> AsyncFactoryError
+    DepiError -. "also RuntimeError" .-> NoActiveScopeError
 ```
 
 A [`RegistrationError`][depi.RegistrationError] means the wiring is wrong — fix

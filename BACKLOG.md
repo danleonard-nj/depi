@@ -6,22 +6,6 @@ Roadmap items intended as public-facing feature direction live in the [README](R
 
 ---
 
-## Blocking the first release
-
-### Publish waves 1 and 2
-
-PyPI allows only 3 pending publishers at a time, so the five distributions ship in waves.
-
-`pydepi` **0.1.0 is live** — the first release run went green on the first attempt, converting the pending publisher into a real project and freeing a slot, which `pydepi-fastapi` now occupies. Pending: `pydepi-fastapi`, `pydepi-flask`, `pydepi-quart`. Still unregistered: `pydepi-django`.
-
-Core going first is enforced, not just documented: the adapters pin `pydepi>=0.1,<0.2` and the release workflow installs the finished wheel into a clean virtualenv, so an adapter tagged before core exists fails before anything uploads.
-
-Remaining: tag `pydepi-flask` and `pydepi-quart`, which frees the last slot for `pydepi-django`. Full sequence in [RELEASING.md](RELEASING.md).
-
-**Done when**: all five distributions are on PyPI and `pip install pydepi[all]` works from a clean environment.
-
----
-
 ## Unverified
 
 CI has now run in full and is green: core on 3.10–3.14, and every Flask, Quart,

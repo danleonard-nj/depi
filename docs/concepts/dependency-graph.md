@@ -11,6 +11,20 @@ provider = services.build_provider()   # validation happens here
 
 ## What is checked
 
+```mermaid
+flowchart TD
+    bp(["build_provider()"]) --> c1{"every singleton constructor param<br/>resolves to a registration?"}
+    bp --> c2{"no cycle anywhere in the graph?"}
+    bp --> c3{"no singleton depends on a<br/>scoped or transient service?"}
+    c1 -- no --> e1["UnregisteredDependencyError"]
+    c2 -- no --> e2["CircularDependencyError"]
+    c3 -- no --> e3["InvalidLifetimeError"]
+    c1 -- yes --> ok
+    c2 -- yes --> ok
+    c3 -- yes --> ok["dependency-first singleton ordering"]
+    ok --> provider(["ServiceProvider"])
+```
+
 ### Missing dependencies
 
 Every constructor parameter of every **singleton** must resolve to a

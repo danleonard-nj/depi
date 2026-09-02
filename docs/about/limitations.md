@@ -107,16 +107,14 @@ not shipped.
 
 - **Version:** `pydepi` 0.1.0; the four adapters 0.1.0. All marked
   `Development Status :: 4 - Beta` in package metadata.
-- **Not yet on PyPI.** At the time these docs were written the distributions
-  had not been published. `pip install pydepi` is the intended command once
-  they are; until then, install from the repository.
-- **CI has not completed a full run.** The workflows are written and their YAML
-  parses; most matrix cells (the full Python version matrix, every job on Linux,
-  several framework versions) have only been verified locally on Windows /
-  Python 3.11. Expect one adjustment pass on the first real run.
-- **Trove classifiers stop at Python 3.12** although `requires-python` is
-  `>=3.10` and CI targets 3.13 (with 3.14 as a non-blocking canary). Support for
-  3.13+ is not claimed in metadata until CI confirms it.
+- **On PyPI.** All five distributions — `pydepi`, `pydepi-flask`,
+  `pydepi-quart`, `pydepi-fastapi`, `pydepi-django` — are published at 0.1.0.
+  `pip install pydepi` installs the core; each adapter is its own install.
+- **Trove classifiers on the adapters stop at Python 3.12.** `requires-python`
+  is `>=3.10`, and CI runs the core on 3.10–3.14; `pydepi-quart` also claims
+  3.13. Flask, FastAPI and Django only run on 3.12 in CI, so their metadata does
+  not claim more until a 3.13 cell is added. `pydepi` 0.1.0 shipped before its
+  own 3.13 / 3.14 classifiers were applied — those land in 0.1.1.
 - **No `LICENSE` file** is present at the repository root, though `pyproject.toml`
   and the READMEs state MIT.
 - The **container design** itself is older than the packaging: developed since

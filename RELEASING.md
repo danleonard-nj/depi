@@ -30,13 +30,18 @@ The name must match what you enter on PyPI exactly. Consider adding yourself as 
 
 ### 2. Register the trusted publishers on PyPI
 
-None of these projects exist on PyPI yet, so each needs a **pending publisher** — a trust relationship registered *before* the first upload, which PyPI converts into a real project on first publish.
+All five distributions are already registered and published on PyPI, so trusted
+publishing is fully set up — nothing to do here for a normal release. This
+section is kept for adding a **new** distribution (e.g. the planned `pydepi-aiohttp`):
+a project that does not exist on PyPI yet needs a **pending publisher** — a trust
+relationship registered *before* the first upload, which PyPI converts into a
+real project on first publish.
 
-> **PyPI allows only 3 pending publishers at a time.** Five distributions therefore need two waves: register three, publish them (which converts them to real projects and frees the slots), then register the last two. The sequence is under "First release, in two waves" below.
+> **PyPI allows only 3 pending publishers at a time.** This constrained the first
+> release into two waves (see "First release, in two waves" below, kept as a
+> record); it only matters again if you register several new distributions at once.
 
-Go to <https://pypi.org/manage/account/publishing/> and add a pending publisher for each distribution.
-
-Owner is `danleonard-nj`, Repository name is `depi`, and Workflow name is `release.yml` for all five. Only these two fields change:
+Go to <https://pypi.org/manage/account/publishing/> and add a pending publisher for the new distribution. For reference, the five existing distributions were registered as:
 
 | PyPI Project Name | Environment name |
 | ----------------- | ---------------- |
@@ -46,9 +51,9 @@ Owner is `danleonard-nj`, Repository name is `depi`, and Workflow name is `relea
 | `pydepi-fastapi`  | `pydepi-fastapi` |
 | `pydepi-django`   | `pydepi-django`  |
 
-Workflow name is the **filename**, not the `name:` inside the file — `release.yml`, not `Release`. The environment must differ per project: PyPI rejects a second publisher reusing the same owner/repo/workflow/environment combination.
+Owner is `danleonard-nj`, Repository name is `depi`, and Workflow name is `release.yml` for every one; the PyPI project name and environment name are what change per distribution.
 
-All five names were free when this was written. If one has been taken since, PyPI will say so on this form, before you have published anything.
+Workflow name is the **filename**, not the `name:` inside the file — `release.yml`, not `Release`. The environment must differ per project: PyPI rejects a second publisher reusing the same owner/repo/workflow/environment combination.
 
 ### 3. Optional: the same again on TestPyPI
 
@@ -81,6 +86,10 @@ The run pauses at the `publish` job until you approve it in the Actions tab.
 ---
 
 ## First release, in two waves
+
+> **Done.** All five distributions shipped 0.1.0 on 2026-09-02. This section is a
+> record of how the first release was sequenced, and the template for a future
+> batch of new distributions.
 
 Two constraints shape the order:
 
@@ -144,5 +153,5 @@ Adapters pin `pydepi>=0.1,<0.2` and build against `depi.integration.BaseInjector
 ## What is not automated
 
 - **No GitHub Release is created.** Tags trigger publishing; release notes are still manual.
-- **No changelog.** Worth adding before the version count gets high enough to need one.
+- **The changelog is not enforced.** [CHANGELOG.md](CHANGELOG.md) exists and has a section per distribution, but the workflow does not check it — updating it before a tag is on you.
 - **`contents: write` is never granted.** The workflow only reads the repo and mints an OIDC token; it cannot push commits or tags.

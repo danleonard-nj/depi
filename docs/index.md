@@ -115,6 +115,7 @@ example, and marks the exact line where `depi` stops being imported.
 `pydepi` is at version 0.1.0 and its distribution metadata marks it Beta. The
 container has been developed since 2020 and a
 [predecessor of the same design](https://github.com/danleonard-nj/framework/tree/main/framework/di)
-has run in a production service since 2022. The packaged distributions in this
-repository have not yet been published to PyPI or exercised by a full CI run —
-see [Limitations](about/limitations.md#maturity) for the detail.
+has run in a production service since 2022. All five distributions
+(`pydepi` and the four framework adapters) are published on PyPI and CI runs
+green across the supported Python matrix — see
+[Limitations](about/limitations.md#maturity) for the remaining rough edges.
