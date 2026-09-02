@@ -27,7 +27,18 @@ def main() -> int:
         print(f'git ls-files failed: {result.stderr.strip()}', file=sys.stderr)
         return 1
 
-    ignored = [line for line in result.stdout.splitlines() if line.strip()]
+    # Build artifacts are *supposed* to be ignored. setuptools leaves
+    # packages/<pkg>/build/lib/... behind after any local build, and flagging
+    # those would make this check cry wolf until nobody reads it.
+    build_dirs = ('build', 'dist', '__pycache__')
+
+    def is_build_artifact(path: str) -> bool:
+        # git ls-files always reports forward slashes, on every platform.
+        return any(part in build_dirs or part.endswith('.egg-info')
+                   for part in path.split('/'))
+
+    ignored = [line for line in result.stdout.splitlines()
+               if line.strip() and not is_build_artifact(line)]
     if ignored:
         print('FAIL: these source files are excluded by .gitignore:', file=sys.stderr)
         for path in ignored:
