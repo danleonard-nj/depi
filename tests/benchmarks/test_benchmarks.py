@@ -3,7 +3,7 @@ import pytest
 import psutil
 import os
 from time import perf_counter
-from depi import ServiceCollection, DependencyInjector
+from depi import ServiceCollection
 from dependency_injector import containers, providers
 from dependency_injector.wiring import Provide, inject
 

@@ -5,19 +5,47 @@ Provides:
 - Type-hinted constructor injection
 - Singleton, Transient, and Scoped lifetimes
 - Async factory and constructor support
-- FastAPI and Flask integration via middleware
 """
 
 import logging
 from threading import Lock, RLock
 from functools import lru_cache
-from functools import wraps
-from typing import Any, Callable, Optional, Type
+from typing import Any, Callable, Optional
 import asyncio
 import inspect
 
+from .exceptions import (
+    AsyncFactoryError,
+    CircularDependencyError,
+    InvalidLifetimeError,
+    MissingAnnotationError,
+    ScopeRequiredError,
+    UnknownLifetimeError,
+    UnregisteredDependencyError,
+)
+
 logger = logging.getLogger(__name__)
 
+
+
+def _reject_awaitable(_type: type, instance: Any) -> None:
+    """
+    Raise AsyncFactoryError for a factory result that must be awaited.
+
+    Closes the coroutine first. Without that, abandoning it un-awaited emits
+    "coroutine ... was never awaited" into the caller's logs on top of the
+    exception, which points at the wrong thing.
+    """
+    close = getattr(instance, 'close', None)
+    if close is not None:
+        try:
+            close()
+        except Exception:  # pragma: no cover - defensive
+            pass
+    raise AsyncFactoryError(
+        f"Factory for '{_type.__name__}' returned an awaitable. "
+        f"Use resolve_async() to resolve async factories."
+    )
 
 @lru_cache(maxsize=None)
 def get_signature(fn):
@@ -142,7 +170,8 @@ class ServiceCollection:
         deps = []
         for name, param in params.items():
             if param.annotation == inspect.Parameter.empty:
-                raise Exception(f"Missing type annotation for parameter '{name}' in {_type.__name__}")
+                raise MissingAnnotationError(
+                    f"Missing type annotation for parameter '{name}' in {_type.__name__}")
             deps.append(ConstructorDependency(name=name, _type=param.annotation))
         return deps
 
@@ -351,10 +380,7 @@ class ServiceProvider:
                 if reg.factory:
                     instance = reg.factory(self)
                     if inspect.isawaitable(instance):
-                        raise RuntimeError(
-                            f"Factory for '{_type.__name__}' returned an awaitable. "
-                            f"Use resolve_async() to resolve async factories."
-                        )
+                        _reject_awaitable(_type, instance)
                 elif reg.instance is not None:
                     instance = reg.instance
                 else:
@@ -367,17 +393,14 @@ class ServiceProvider:
             if reg.factory:
                 instance = reg.factory(self)
                 if inspect.isawaitable(instance):
-                    raise RuntimeError(
-                        f"Factory for '{_type.__name__}' returned an awaitable. "
-                        f"Use resolve_async() to resolve async factories."
-                    )
+                    _reject_awaitable(_type, instance)
                 return instance
             return reg.activate(self)
 
         elif lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
+            raise ScopeRequiredError("Scoped resolution requires a scope. Call provider.create_scope().")
 
-        raise Exception(f"Unknown lifetime: {lifetime}")
+        raise UnknownLifetimeError(f"Unknown lifetime: {lifetime}")
 
     async def resolve_async(self, _type: type) -> Any:
         """
@@ -438,9 +461,19 @@ class ServiceProvider:
                 return await reg.activate_async(self)
 
         elif reg.lifetime == Lifetime.Scoped:
-            raise Exception("Scoped resolution requires a scope. Call provider.create_scope().")
+            raise ScopeRequiredError("Scoped resolution requires a scope. Call provider.create_scope().")
 
-        raise Exception(f"Unknown lifetime: {reg.lifetime}")
+        raise UnknownLifetimeError(f"Unknown lifetime: {reg.lifetime}")
+
+    def is_registered(self, _type: type) -> bool:
+        """
+        Return True if ``_type`` has a registration.
+
+        Integrations use this to decide whether an annotated view-function
+        parameter is something depi owns, or something the web framework will
+        supply (a path converter, a query argument).
+        """
+        return _type in self._dependency_lookup
 
     def _get_registered_dependency(
         self,
@@ -454,11 +487,12 @@ class ServiceProvider:
         if reg:
             return reg
         if requesting_type:
-            raise Exception(
+            raise UnregisteredDependencyError(
                 f"Failed to locate registration for '{implementation_type.__name__}' "
                 f"while instantiating '{requesting_type._type_name}'"
             )
-        raise Exception(f"Failed to locate registration for '{implementation_type.__name__}'")
+        raise UnregisteredDependencyError(
+            f"Failed to locate registration for '{implementation_type.__name__}'")
 
     def _validate_dependencies(self) -> None:
         """
@@ -484,14 +518,14 @@ class ServiceProvider:
                         continue  # Missing dependency will be caught elsewhere
 
                     if dep_reg.lifetime == Lifetime.Transient:
-                        raise Exception(
+                        raise InvalidLifetimeError(
                             f"Singleton '{reg._type_name}' cannot depend on transient "
                             f"'{dep_reg._type_name}'. Transient dependencies would only "
                             f"be instantiated once during singleton creation, which is "
                             f"not the intended behavior of a transient service."
                         )
                     if dep_reg.lifetime == Lifetime.Scoped:
-                        raise Exception(
+                        raise InvalidLifetimeError(
                             f"Singleton '{reg._type_name}' cannot depend on scoped "
                             f"'{dep_reg._type_name}'. Scoped dependencies would only "
                             f"be instantiated once during singleton creation, breaking "
@@ -519,14 +553,24 @@ class ServiceProvider:
         """
         visited: set = set()
         visiting: set = set()
+        # `visiting` answers "is this on the current path" in O(1); `path` keeps
+        # the same registrations in order so a cycle can be reported as the
+        # chain that produced it rather than just the type it was noticed at.
+        path: list = []
         order: Optional[list] = [] if collect_order else None
 
         def dfs(reg: DependencyRegistration):
             if reg in visited:
                 return
             if reg in visiting:
-                raise Exception(f"Cyclic dependency detected: {reg._type_name}")
+                # Trim the path to where this type first appeared, then close
+                # the loop, so the message shows only the cycle itself and not
+                # whatever chain happened to lead into it.
+                cycle = path[path.index(reg):] + [reg]
+                chain = ' -> '.join(r._type_name for r in cycle)
+                raise CircularDependencyError(f"Cyclic dependency detected: {chain}")
             visiting.add(reg)
+            path.append(reg)
             for param in reg.constructor_params:
                 if strict:
                     dep = self._get_registered_dependency(param.dependency_type, reg)
@@ -535,6 +579,7 @@ class ServiceProvider:
                     if dep is None:
                         continue
                 dfs(dep)
+            path.pop()
             visiting.discard(reg)
             visited.add(reg)
             if order is not None:
@@ -568,7 +613,9 @@ class ServiceProvider:
                     # support coroutine factories
                     if asyncio.iscoroutine(inst):
                         try:
-                            loop = asyncio.get_running_loop()
+                            # Probe only: raises RuntimeError when there is no
+                            # running loop, which the except branch below handles.
+                            asyncio.get_running_loop()
                             # run in separate thread if already in event loop
                             import concurrent.futures
                             with concurrent.futures.ThreadPoolExecutor() as ex:
@@ -670,6 +717,12 @@ class ServiceScope:
         factory = reg.factory
         if factory:
             inst = factory(self)
+            # Same guard ServiceProvider.resolve applies. Without it an async
+            # factory resolved through a scope returns an un-awaited coroutine,
+            # which then fails far away from its cause -- and scopes are what
+            # every web integration resolves through.
+            if inspect.isawaitable(inst):
+                _reject_awaitable(_type, inst)
         else:
             # your precompiled sync resolver
             inst = reg._resolver_fn(self)
@@ -712,6 +765,10 @@ class ServiceScope:
             insts[_type] = inst
 
         return inst
+
+    def is_registered(self, _type: type) -> bool:
+        """Return True if ``_type`` has a registration. See ServiceProvider.is_registered."""
+        return _type in self._dependency_lookup
 
     def dispose(self) -> None:
         """

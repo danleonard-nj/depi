@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pydepi-quart"
+version = "0.1.0"
+description = "Quart integration for pydepi"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Dan Leonard"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Framework :: AsyncIO",
+    "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+]
+keywords = ["dependency-injection", "di", "ioc", "quart", "asgi"]
+requires-python = ">=3.10"
+dependencies = [
+    # Pinned to a compatible core range: adapters build against depi.integration
+    # and depi.context, so a core major bump is a breaking change for them.
+    "pydepi>=0.1,<0.2",
+    "quart>=0.18",
+]
+
+[project.urls]
+Homepage = "https://github.com/danleonard-nj/depi"
+Repository = "https://github.com/danleonard-nj/depi"
+
+[tool.setuptools.packages.find]
+include = ["depi_quart*"]

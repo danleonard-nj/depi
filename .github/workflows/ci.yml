@@ -1,0 +1,251 @@
+name: CI
+
+# One job per package. That separation is the point: when a new FastAPI release
+# or a uvicorn runtime change breaks an adapter, only that adapter's job goes
+# red. The core container stays green and stays shippable.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  FORCE_COLOR: "1"
+
+jobs:
+  core:
+    # The container is pure Python, so the interpreter version is the risk axis
+    # here. No web framework is installed in this job, deliberately.
+    name: core (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          # Canary: reports breakage on a Python we do not claim to support yet.
+          - python: "3.14"
+            experimental: true
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install core only
+        run: pip install ./packages/depi-core pytest pytest-asyncio
+
+      - name: Core must pull in no third-party code
+        run: python scripts/check_core_purity.py
+
+      - name: Core suite
+        run: pytest tests/core -q
+
+  flask:
+    # Framework version is the risk axis for adapters, so Python is fixed here
+    # and the matrix varies the framework instead.
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Flask 2.2 and 2.3 declare `Werkzeug>=x` with no upper bound, so an
+          # unconstrained install resolves Werkzeug 3.x and breaks Flask itself.
+          # Pinning here is not us working around depi -- it is Flask
+          # under-constraining its own dependency.
+          - { name: "flask 2.2 (declared floor)", pins: 'flask~=2.2.0 "werkzeug<3"' }
+          - { name: "flask 2.3", pins: 'flask~=2.3.0 "werkzeug<3"' }
+          - { name: "flask 3.0", pins: "flask~=3.0.0" }
+          - { name: "flask 3.1", pins: "flask~=3.1.0" }
+          - { name: "flask latest", pins: "--upgrade flask", experimental: true }
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Adapter jobs fix the interpreter so the framework version is the
+          # only variable -- unless a release demands a newer one.
+          python-version: ${{ matrix.python || '3.12' }}
+      - run: pip install ./packages/depi-core ./packages/depi-flask pytest pytest-asyncio
+      - name: Pin framework version
+        run: pip install ${{ matrix.pins }}
+      - run: pip list
+      - run: pytest tests/integrations/test_flask.py -q
+
+  quart:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "quart 0.18 (declared floor)", pins: 'quart~=0.18.0 "werkzeug<3"' }
+          - { name: "quart 0.19", pins: "quart~=0.19.0" }
+          - { name: "quart 0.20", pins: "quart~=0.20.0" }
+          - { name: "quart 0.22", pins: "quart~=0.22.0" }
+          # Quart 0.23 declares requires-python >=3.13, so this cell cannot run
+          # on the 3.12 the other cells use.
+          - { name: "quart 0.23", pins: "quart~=0.23.0", python: "3.13" }
+          - { name: "quart latest", pins: "--upgrade quart", python: "3.13", experimental: true }
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Adapter jobs fix the interpreter so the framework version is the
+          # only variable -- unless a release demands a newer one.
+          python-version: ${{ matrix.python || '3.12' }}
+      - run: pip install ./packages/depi-core ./packages/depi-quart pytest pytest-asyncio
+      - name: Pin framework version
+        run: pip install ${{ matrix.pins }}
+      - run: pip list
+      - run: pytest tests/integrations/test_quart.py -q
+
+  fastapi:
+    # The adapter this restructure exists to isolate. FastAPI pins Starlette
+    # with an upper bound, so each cell resolves its own matching Starlette --
+    # which is exactly the coupling that broke the old single-suite setup.
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "fastapi 0.100 (declared floor)", pins: 'fastapi~=0.100.0 "httpx<0.25"' }
+          - { name: "fastapi 0.110", pins: 'fastapi~=0.110.0 "httpx<0.28"' }
+          - { name: "fastapi 0.115", pins: "fastapi~=0.115.0 httpx" }
+          - { name: "fastapi 0.141", pins: "fastapi~=0.141.0 httpx" }
+          - { name: "fastapi latest", pins: "--upgrade fastapi httpx", experimental: true }
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Adapter jobs fix the interpreter so the framework version is the
+          # only variable -- unless a release demands a newer one.
+          python-version: ${{ matrix.python || '3.12' }}
+      - run: pip install ./packages/depi-core ./packages/depi-fastapi pytest pytest-asyncio httpx
+      - name: Pin framework version
+        run: pip install ${{ matrix.pins }}
+      - run: pip list
+      - run: pytest tests/integrations/test_fastapi.py -q
+
+  django:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "django 4.2 LTS (declared floor)", pins: "django~=4.2.0" }
+          - { name: "django 5.2 LTS", pins: "django~=5.2.0" }
+          - { name: "django 6.0", pins: "django~=6.0.0" }
+          - { name: "django 6.1", pins: "django~=6.1.0" }
+          - { name: "django latest", pins: "--upgrade django", experimental: true }
+    continue-on-error: ${{ matrix.experimental || false }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          # Adapter jobs fix the interpreter so the framework version is the
+          # only variable -- unless a release demands a newer one.
+          python-version: ${{ matrix.python || '3.12' }}
+      - run: pip install ./packages/depi-core ./packages/depi-django pytest pytest-asyncio
+      - name: Pin framework version
+        run: pip install ${{ matrix.pins }}
+      - run: pip list
+      - run: pytest tests/integrations/test_django.py -q
+
+  packaging:
+    # Five distributions means five ways to ship a broken wheel. This catches
+    # the packaging mistakes the test suites cannot see.
+    name: packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+
+      - name: Build every distribution
+        run: |
+          for pkg in packages/*/; do
+            echo "::group::build $pkg"
+            python -m build --outdir dist "$pkg"
+            echo "::endgroup::"
+          done
+
+      - name: Validate metadata
+        # --strict: a missing long_description is only a warning by default, and
+        # that is exactly how a package ships to PyPI with a blank project page.
+        run: twine check --strict dist/*
+
+      - name: Core wheel must not carry adapter code
+        run: |
+          python - <<'PY'
+          import glob, os, sys, zipfile
+
+          # Wheel filenames normalise '-' to '_' in the distribution name, so the
+          # core wheel is the only one starting 'pydepi-'; adapters are 'pydepi_x-'.
+          core = [w for w in glob.glob('dist/*.whl')
+                  if os.path.basename(w).startswith('pydepi-')]
+          if len(core) != 1:
+              sys.exit(f'expected exactly one core wheel in dist/, found {core}')
+
+          leaked = [n for n in zipfile.ZipFile(core[0]).namelist()
+                    if n.startswith(('depi_flask', 'depi_quart', 'depi_fastapi', 'depi_django'))]
+          if leaked:
+              sys.exit(f'core wheel {core[0]} contains adapter modules: {leaked}')
+          print(f'OK: {os.path.basename(core[0])} ships only core modules')
+          PY
+
+      - name: A fresh core install stays dependency-free
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install ./packages/depi-core
+          /tmp/clean/bin/python scripts/check_core_purity.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: distributions
+          path: dist/
+
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      # Scoped to the packages: the historical test suite has pre-existing
+      # findings that are not worth gating merges on.
+      - run: ruff check packages --select F,E9
+
+      - name: No package source is excluded by .gitignore
+        run: python scripts/check_sources_tracked.py
+
+  benchmarks:
+    # Informational only. Never gates a merge -- benchmark numbers move with
+    # runner noise, and a slow runner is not a broken container.
+    name: benchmarks
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ./packages/depi-core pytest pytest-benchmark dependency-injector psutil
+      - run: pytest tests/benchmarks -q

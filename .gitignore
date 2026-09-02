@@ -173,9 +173,12 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-edges.py
-configuration.py
-web.py
-exceptions.py
+# Root-level scratch files. Anchored with a leading slash: an unanchored
+# pattern like "exceptions.py" matches at ANY depth, which silently excluded
+# packages/depi-core/depi/exceptions.py from the repo.
+/edges.py
+/configuration.py
+/web.py
 .vscode/settings.json
-tests/benchmark_results.json
+# Benchmark reports are ~50MB. The ** pattern already matches tests/ itself.
+tests/**/benchmark_results*.json
