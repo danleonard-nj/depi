@@ -2,6 +2,8 @@
 
 `depi` is a type-safe dependency injection container that resolves dependency graphs from constructor type annotations. It is **100% pure Python** — no C extensions, no build step, no per-platform wheels — and the core has **zero dependencies**. Framework support ships as separate, independently versioned packages.
 
+**Documentation:** <https://danleonard-nj.github.io/depi/> (source under [`docs/`](docs/), built with MkDocs).
+
 It started as a .NET habit that Python was missing. `ServiceCollection`, `ServiceProvider`, and the singleton / scoped / transient split come straight from `Microsoft.Extensions.DependencyInjection` — that model works, and there was no reason to invent another one.
 
 It has been in iterative development since 2020 and running in production since 2022 ([lineage](https://github.com/danleonard-nj/framework/tree/main/framework/di)), where it wires a service of **120+ registrations** from a single container. It scales down just as well: a three-service script and a hundred-service application use the same API, and resolution cost tracks the depth of what you asked for, not the size of the container.

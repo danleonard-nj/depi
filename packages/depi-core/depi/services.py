@@ -697,6 +697,18 @@ class ServiceScope:
         self.dispose()
 
     def resolve(self, _type: type) -> Any:
+        """
+        Resolve ``_type`` against this scope.
+
+        Singletons cascade to the root provider; scoped services return the
+        one instance held by this scope (constructing it on first request);
+        transients are built fresh on every call.
+
+        Raises:
+            UnregisteredDependencyError: ``_type`` has no registration.
+            AsyncFactoryError: ``_type`` has an async factory; use
+                :meth:`resolve_async`.
+        """
         provider = self._provider
         reg = provider._get_registered_dependency(_type)
         life = reg.lifetime
@@ -734,6 +746,16 @@ class ServiceScope:
         return inst
 
     async def resolve_async(self, _type: type) -> Any:
+        """
+        Async variant of :meth:`resolve`.
+
+        Awaits async factories and async constructor dependencies. Scoped
+        instances are cached for the life of the scope, so a repeated
+        resolution returns the same object without re-awaiting.
+
+        Raises:
+            UnregisteredDependencyError: ``_type`` has no registration.
+        """
         provider = self._provider
         reg = provider._get_registered_dependency(_type)
         life = reg.lifetime
