@@ -180,5 +180,5 @@ cython_debug/
 /configuration.py
 /web.py
 .vscode/settings.json
+# Benchmark reports are ~50MB. The ** pattern already matches tests/ itself.
 tests/**/benchmark_results*.json
-tests/benchmark_results*.json

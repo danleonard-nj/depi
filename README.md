@@ -1,8 +1,10 @@
 # depi – Dependency Injection for Python
 
-`depi` is a type-safe dependency injection container that resolves dependency graphs from constructor type annotations. The core has **no dependencies** and knows nothing about the web; framework support ships as separate, independently versioned packages.
+`depi` is a type-safe dependency injection container that resolves dependency graphs from constructor type annotations. It is **100% pure Python** — no C extensions, no build step, no per-platform wheels — and the core has **zero dependencies**. Framework support ships as separate, independently versioned packages.
 
-Interested in `depi`'s lineage before the dawn of AI? `depi` has been in iterative development since 2020! (lineage from 2022: https://github.com/danleonard-nj/framework/tree/main/framework/di)
+It started as a .NET habit that Python was missing. `ServiceCollection`, `ServiceProvider`, and the singleton / scoped / transient split come straight from `Microsoft.Extensions.DependencyInjection` — that model works, and there was no reason to invent another one.
+
+It has been in iterative development since 2020 and running in production since 2022 ([lineage](https://github.com/danleonard-nj/framework/tree/main/framework/di)), where it wires a service of **120+ registrations** from a single container. It scales down just as well: a three-service script and a hundred-service application use the same API, and resolution cost tracks the depth of what you asked for, not the size of the container.
 
 ## Packages
 
@@ -266,6 +268,92 @@ def configure_services(env: str) -> ServiceCollection:
     return services
 ```
 
+## Scaling to Real Containers
+
+The API does not change as a container grows. The service this was built for registers **120+ dependencies** — SDK clients, repositories, domain services, speech and LLM providers, and typed configuration models — from a single container. These are the patterns that hold up at that size.
+
+### Group registrations by role
+
+Registration is ordinary Python, so split it into functions and compose them. This is the difference between a readable container and a thousand-line function:
+
+```python
+def register_configs(services: ServiceCollection): ...
+def register_factories(services: ServiceCollection): ...
+def register_repositories(services: ServiceCollection): ...
+def register_clients(services: ServiceCollection): ...
+def register_services(services: ServiceCollection): ...
+
+def build_container() -> ServiceProvider:
+    services = ServiceCollection()
+    services.add_singleton(Configuration)
+
+    register_configs(services)
+    register_factories(services)
+    register_repositories(services)
+    register_clients(services)
+    register_services(services)
+
+    return services.build_provider()
+```
+
+### Turn configuration sections into typed singletons
+
+One configuration object in, many validated models out — registered by a helper rather than by hand:
+
+```python
+def register_config(services: ServiceCollection, config_type: type, section: str):
+    """Validate one section of the app config into its own typed singleton."""
+    def factory(provider):
+        configuration = provider.resolve(Configuration)
+        return config_type.model_validate(getattr(configuration, section))
+
+    services.add_singleton(config_type, factory=factory)
+
+register_config(services, EmailConfig, 'email')
+register_config(services, StorageConfig, 'storage')
+register_config(services, StockMonitorConfig, 'stock_monitor')
+```
+
+Anything downstream then takes `EmailConfig` as a constructor parameter and gets a validated model, not a dictionary.
+
+### Wrap third-party clients in factories
+
+SDK clients rarely have annotated constructors depi can read, so give them a factory. The factory receives the provider, so it can resolve whatever it needs:
+
+```python
+def configure_mongo_client(provider) -> AsyncIOMotorClient:
+    configuration = provider.resolve(Configuration)
+    return AsyncIOMotorClient(configuration.mongo['connection_string'])
+
+def configure_http_client(provider) -> AsyncClient:
+    return AsyncClient(timeout=None, limits=Limits(max_connections=100))
+
+services.add_singleton(AsyncIOMotorClient, factory=configure_mongo_client)
+services.add_singleton(AsyncClient, factory=configure_http_client)
+```
+
+### Register providers by concrete type
+
+When several implementations share an interface and callers want a *specific* one, register each by its concrete type. Each still gets its own SDK client, config and cache injected:
+
+```python
+services.add_singleton(ChatGPTProvider)
+services.add_singleton(AnthropicLLMProvider)
+services.add_singleton(GoogleLLMProvider)
+```
+
+### What it costs at that size
+
+Measured on a container of 98 registrations, four levels deep:
+
+| | |
+| --- | --- |
+| `build_provider()` — whole graph validated, cycle-checked, ordered | **0.28 ms** |
+| `resolve()` of a singleton | **0.17 µs** |
+| `resolve()` of a 25-level transient chain (25 constructions per call) | **14.9 µs** — ~0.6 µs per level |
+
+Build cost is paid once, at startup. After that, resolution cost is a function of how deep the thing you asked for is, not how large the container is — a hundred-service container resolves a shallow dependency exactly as fast as a three-service one.
+
 ## Testing
 
 Swap implementations at registration time:
@@ -338,6 +426,12 @@ except RegistrationError as exc:
 
 ## Performance
 
+### What is being compared
+
+`dependency-injector` is a **Cython extension** — its `providers`, `containers` and `_cwiring` modules ship as compiled binaries, so its resolution runs as native code. `depi` is pure Python, and every figure below is interpreted bytecode measured against compiled C.
+
+That is the honest way to read the gap: roughly 2.5x the cost of a C extension, while remaining installable anywhere CPython runs — one `py3-none-any` wheel, no compiler, no build step, nothing to rebuild for a new platform or interpreter.
+
 Measured with `pytest-benchmark` on a 12th Gen Intel i7-12800H, Python 3.11.5, against `dependency-injector` 4.48.1:
 
 | Metric                  | `depi` | `dependency-injector` | Ratio             |
@@ -351,7 +445,7 @@ Measured with `pytest-benchmark` on a 12th Gen Intel i7-12800H, Python 3.11.5, a
 
 **Read the ratios, not the absolute figures.** Repeat runs on the same machine have differed by 8–54% depending on what else was running, while the ratios above held within a few percent across runs. Anyone reproducing these on their own hardware should expect different nanosecond counts and similar proportions.
 
-**What the trade buys**: roughly 2.5x the per-resolution cost of `dependency-injector`, in exchange for resolving dependency graphs from type annotations with no wiring configuration. Setup is ~5x faster, which favours workloads that build containers often — test suites especially. Resolution cost stays flat as graphs deepen: the complex-graph figure is no worse than the simple one.
+**What the trade buys**: roughly 2.5x the per-resolution cost of a compiled C extension, in exchange for pure-Python portability and resolving dependency graphs from type annotations with no wiring configuration. Setup is ~5x faster, which favours workloads that build containers often — test suites especially. Resolution cost stays flat as graphs deepen: the complex-graph figure is no worse than the simple one.
 
 Reproduce:
 
