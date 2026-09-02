@@ -10,31 +10,39 @@ Roadmap items intended as public-facing feature direction live in the [README](R
 
 ### Publish waves 1 and 2
 
-PyPI allows only 3 pending publishers at a time. Wave 1 (`pydepi`, `pydepi-flask`, `pydepi-quart`) is registered. Publishing those frees the slots for `pydepi-fastapi` and `pydepi-django`. Core must go first — the adapters pin `pydepi>=0.1,<0.2`, and the release workflow's smoke test enforces it. Full sequence in [RELEASING.md](RELEASING.md).
+PyPI allows only 3 pending publishers at a time, so the five distributions ship in waves.
+
+`pydepi` **0.1.0 is live** — the first release run went green on the first attempt, converting the pending publisher into a real project and freeing a slot, which `pydepi-fastapi` now occupies. Pending: `pydepi-fastapi`, `pydepi-flask`, `pydepi-quart`. Still unregistered: `pydepi-django`.
+
+Core going first is enforced, not just documented: the adapters pin `pydepi>=0.1,<0.2` and the release workflow installs the finished wheel into a clean virtualenv, so an adapter tagged before core exists fails before anything uploads.
+
+Remaining: tag `pydepi-flask` and `pydepi-quart`, which frees the last slot for `pydepi-django`. Full sequence in [RELEASING.md](RELEASING.md).
 
 **Done when**: all five distributions are on PyPI and `pip install pydepi[all]` works from a clean environment.
 
 ---
 
-## Unverified — CI has never actually run
+## Unverified
 
-The workflows are written and their YAML parses, but no run has happened on GitHub. Everything below was verified locally, on Windows, on Python 3.11.
+CI has now run in full and is green: core on 3.10–3.14, and every Flask, Quart,
+FastAPI and Django cell. The items below are the gaps a green matrix does not
+close.
 
-### Most CI matrix cells have never executed
+### Python 3.13 classifiers on the Flask, FastAPI and Django adapters
 
-Run locally in clean virtualenvs: core (framework-free), Flask 2.2 floor and 3.1, Quart 0.18 floor and 0.22, FastAPI 0.100 floor and 0.141, Django 4.2 floor and 5.2.
+The first full CI run was green everywhere except two Quart cells, which turned
+out to be a test over-fitted to one Quart version rather than an adapter bug.
+That closed the "matrix cells have never executed" item and unblocked this one,
+but only partly. Core runs 3.10–3.13 plus a 3.14 canary and Quart runs 3.13 in
+two cells, so `pydepi-quart` claims 3.13. Flask, FastAPI and Django only ever
+run on 3.12, so they still stop there — claiming an untested interpreter is the
+exact drift this cleanup removed.
 
-**Never run**: Flask 2.3 / 3.0 · Quart 0.19 / 0.20 / 0.23 · FastAPI 0.110 / 0.115 · Django 6.0 / 6.1 · the entire core Python matrix except 3.11 · every job on Linux.
+`pydepi` 0.1.0 shipped before this was applied, so core's 3.13 / 3.14
+classifiers have to wait for 0.1.1. Classifiers are frozen per release.
 
-The old-version cells encode reconstructed transitive pins — Flask 2.2 and Quart 0.18 declare `Werkzeug>=x` with no upper bound, so those cells pin `werkzeug<3` explicitly. That strategy is proven on the cells that ran, but expect one adjustment pass on the first real run.
-
-**Done when**: a full CI run is green, or the failing cells are fixed or removed with a reason recorded.
-
-### Python 3.13 / 3.14 classifiers
-
-`requires-python` is `>=3.10` and CI tests 3.13 (with 3.14 as a non-blocking canary), but the trove classifiers stop at 3.12 — deliberately, since claiming support for an untested interpreter is the exact kind of drift this cleanup removed.
-
-**Done when**: CI shows 3.13 green, and `Programming Language :: Python :: 3.13` is added to all five `pyproject.toml` files.
+**Done when**: those three matrices gain a 3.13 cell and the classifier follows
+the evidence.
 
 ### Django is unproven end-to-end
 
