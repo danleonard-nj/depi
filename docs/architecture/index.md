@@ -27,37 +27,31 @@ bought is now a coupling every file pays.
 
 ## The shape that avoids it
 
-```text
-                       ┌─────────────────────────────────────────────┐
-                       │  EDGE — imports depi + the framework         │
-                       │                                             │
-   entry point ──────► │  composition.py   ServiceCollection         │
-                       │       │           → ServiceProvider          │
-                       │       │ registers                            │
-                       │       ▼                                      │
-                       │  framework adapter  (FlaskInjector, ...)     │
-                       └───────┬─────────────────────────────────────┘
-                               │ resolves the entry point per request
-                               ▼
-                 ┌───────────────────────────────┐
-                 │  APPLICATION — imports domain  │
-                 │                                │
-                 │   RegisterUser(users, clock)   │
-                 └───────┬───────────────┬────────┘
-                         │ depends on    │ depends on
-                         ▼               ▼
-                 ┌───────────────────────────────┐
-                 │  DOMAIN — imports nothing      │
-                 │   User · UserRepository(Proto) │
-                 │          Clock(Proto)          │
-                 └───────▲───────────────▲────────┘
-                         │ implements    │ implements
-                 ┌───────┴───────────────┴────────┐
-                 │  INFRASTRUCTURE — imports the   │
-                 │  domain ports                   │
-                 │   PostgresUserRepository        │
-                 │   SystemClock                   │
-                 └────────────────────────────────┘
+```mermaid
+flowchart TB
+    entry(["entry point"]) --> comp
+
+    subgraph edge["EDGE — imports depi + the framework"]
+        comp["composition.py<br/>ServiceCollection → ServiceProvider"]
+        adapter["framework adapter<br/>(FlaskInjector, ...)"]
+        comp -- registers --> adapter
+    end
+
+    subgraph app["APPLICATION — imports domain"]
+        ru["RegisterUser(users, clock)"]
+    end
+
+    subgraph domain["DOMAIN — imports nothing"]
+        types["User<br/>UserRepository(Protocol)<br/>Clock(Protocol)"]
+    end
+
+    subgraph infra["INFRASTRUCTURE — imports the domain ports"]
+        impls["PostgresUserRepository<br/>SystemClock"]
+    end
+
+    edge -- "resolves the entry point per request" --> app
+    app -- "depends on" --> domain
+    infra -- "implements" --> domain
 ```
 
 Only the **edge** box imports `depi`. Dependencies point inward: infrastructure

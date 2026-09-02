@@ -96,11 +96,20 @@ constructor-injected dependencies; a singleton built by a
 [factory](factories.md) that resolves a transient itself is not checked, because
 the factory author has taken responsibility for it.
 
-Allowed:
+Allowed dependencies — an arrow means *may depend on*:
 
-- singleton → singleton
-- scoped → scoped, singleton
-- transient → anything
+```mermaid
+flowchart LR
+    transient --> transient
+    transient --> scoped
+    transient --> singleton
+    scoped --> scoped
+    scoped --> singleton
+    singleton --> singleton
+```
+
+The rejected cases are the arrows this graph omits: singleton → scoped and
+singleton → transient.
 
 ## Reaching the scope without passing it around
 

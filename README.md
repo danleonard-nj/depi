@@ -392,19 +392,18 @@ with provider.create_scope() as scope:
 
 Every failure derives from `DepiError`, so you can catch depi without catching everything. The split is by *when* a failure happens, because that maps to who fixes it — a registration error means the container was described wrongly and shows up at startup; a resolution error means it was asked for something it could not produce.
 
-```
-DepiError
-├── RegistrationError          raised at registration / build time
-│   ├── MissingAnnotationError
-│   ├── CircularDependencyError
-│   ├── InvalidLifetimeError
-│   └── UnknownLifetimeError
-└── ResolutionError            raised at resolve time
-    ├── UnregisteredDependencyError
-    ├── ScopeRequiredError
-    └── AsyncFactoryError
-
-NoActiveScopeError             DepiError, raised by current_scope()
+```mermaid
+flowchart TD
+    DepiError --> RegistrationError["RegistrationError<br/>(raised at registration / build time)"]
+    DepiError --> ResolutionError["ResolutionError<br/>(raised at resolve time)"]
+    RegistrationError --> MissingAnnotationError
+    RegistrationError --> CircularDependencyError
+    RegistrationError --> InvalidLifetimeError
+    RegistrationError --> UnknownLifetimeError
+    ResolutionError --> UnregisteredDependencyError
+    ResolutionError --> ScopeRequiredError
+    ResolutionError --> AsyncFactoryError
+    DepiError -. "also RuntimeError, raised by current_scope()" .-> NoActiveScopeError
 ```
 
 | Condition | Raises |

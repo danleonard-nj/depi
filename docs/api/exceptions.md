@@ -5,19 +5,18 @@ hierarchy splits by *when* the failure happens — see
 [Errors](../concepts/errors.md) for the reasoning and a table of what raises
 what.
 
-```text
-DepiError
-├── RegistrationError          raised at registration / build time
-│   ├── MissingAnnotationError
-│   ├── CircularDependencyError
-│   ├── InvalidLifetimeError
-│   └── UnknownLifetimeError
-└── ResolutionError            raised at resolve time
-    ├── UnregisteredDependencyError
-    ├── ScopeRequiredError
-    └── AsyncFactoryError
-
-NoActiveScopeError             DepiError + RuntimeError
+```mermaid
+flowchart TD
+    DepiError --> RegistrationError["RegistrationError<br/>(raised at registration / build time)"]
+    DepiError --> ResolutionError["ResolutionError<br/>(raised at resolve time)"]
+    RegistrationError --> MissingAnnotationError
+    RegistrationError --> CircularDependencyError
+    RegistrationError --> InvalidLifetimeError
+    RegistrationError --> UnknownLifetimeError
+    ResolutionError --> UnregisteredDependencyError
+    ResolutionError --> ScopeRequiredError
+    ResolutionError --> AsyncFactoryError
+    DepiError -. "also RuntimeError" .-> NoActiveScopeError
 ```
 
 `AsyncFactoryError` and `NoActiveScopeError` also derive from `RuntimeError`,

@@ -30,6 +30,19 @@ before the thing that needs it. The cost of a `resolve` call is proportional to
 the depth of the graph below the requested type, not to the size of the
 container.
 
+```mermaid
+flowchart TD
+    start(["resolve(T)"]) --> lookup{"registration for T?"}
+    lookup -- no --> unreg["UnregisteredDependencyError"]
+    lookup -- yes --> life{"lifetime?"}
+    life -- singleton --> cached{"cached instance?"}
+    cached -- yes --> ret(["return instance"])
+    cached -- no --> build
+    life -- transient --> build["construct: call factory,<br/>return instance=, or call the type with<br/>each constructor param resolved depth-first"]
+    life -- scoped --> scoperr["ScopeRequiredError<br/>(must be resolved from a scope)"]
+    build --> cache["cache if singleton"] --> ret
+```
+
 ## Reading annotations
 
 `depi` reads the type annotation on each `__init__` parameter and uses it as the
