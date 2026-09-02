@@ -63,7 +63,7 @@ class DependencyRegistration:
     """
     __slots__ = (
         "dependency_type", "implementation_type", "lifetime", "instance", "factory",
-        "constructor_params", "_type_name", "_resolver_fn"
+        "eager", "constructor_params", "_type_name", "_resolver_fn"
     )
 
     def __hash__(self):
@@ -80,6 +80,7 @@ class DependencyRegistration:
         implementation_type: Optional[type] = None,
         instance: Any = None,
         factory: Callable[['DependencyRegistration'], Any] = None,
+        eager: bool = False,
         constructor_params: list[ConstructorDependency] = None,
         resolver_fn: Optional[Callable] = None
     ):
@@ -88,6 +89,7 @@ class DependencyRegistration:
         self.implementation_type = implementation_type or dependency_type
         self.instance = instance
         self.factory = factory
+        self.eager = eager
         self.constructor_params = constructor_params or []
         self._type_name = self.implementation_type.__name__
         self._resolver_fn = resolver_fn
@@ -161,15 +163,22 @@ class ServiceCollection:
         dependency_type: type,
         implementation_type: Optional[type] = None,
         instance: Any = None,
-        factory: Callable = None
+        factory: Callable = None,
+        eager: bool = False
     ) -> None:
-        """Register a singleton service."""
+        """
+        Register a singleton service.
+
+        `eager`: If True, construct the singleton during build()/build_async()
+        instead of lazily on first resolve().
+        """
         self._register_dependency(
             dependency_type=dependency_type,
             implementation_type=implementation_type,
             lifetime=Lifetime.Singleton,
             instance=instance,
-            factory=factory
+            factory=factory,
+            eager=eager
         )
 
     def add_transient(
@@ -248,10 +257,18 @@ class ServiceCollection:
         """Expose raw registration dictionary."""
         return self._container
 
-    def build_provider(self) -> 'ServiceProvider':
+    def build_provider(self, eager_all: bool = False) -> 'ServiceProvider':
         """
         Finalize registrations and return a built ServiceProvider.
+
+        `eager_all`: If True, mark every singleton registration as eager so
+        all singletons are constructed during build() (pre-lazy behavior),
+        instead of only those explicitly registered with eager=True.
         """
+        if eager_all:
+            for reg in self._container.values():
+                if reg.lifetime == Lifetime.Singleton:
+                    reg.eager = True
         provider = ServiceProvider(self)
         provider.build()
         return provider
@@ -529,7 +546,10 @@ class ServiceProvider:
 
     def build(self) -> 'ServiceProvider':
         """
-        Instantiate all singletons in dependency order.
+        Validate and order every singleton registration, but only construct
+        factories and singletons explicitly marked eager=True. Other
+        singletons are validated/ordered here and constructed lazily on
+        first resolve().
         """
         # Validate dependencies before building
         self._validate_dependencies()
@@ -537,9 +557,11 @@ class ServiceProvider:
         self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        # strict ordered pass over the singletons we actually instantiate
+        # strict ordered pass validates/orders all singletons, even lazy ones
         sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
+            if not (reg.factory or reg.eager):
+                continue
             if reg.instance is None:
                 if reg.factory:
                     inst = reg.factory(self)
@@ -556,13 +578,14 @@ class ServiceProvider:
                 else:
                     inst = reg.activate(self)
                 reg.instance = inst
-                with self._cache_lock:
-                    self._singleton_instances[reg.dependency_type] = inst
+            with self._cache_lock:
+                self._singleton_instances[reg.dependency_type] = reg.instance
         return self
 
     async def build_async(self) -> 'ServiceProvider':
         """
-        Async variant of build(), awaiting any coroutine constructors or factories.
+        Async variant of build(): validates/orders every singleton, but only
+        constructs factories and singletons explicitly marked eager=True.
         """
         # Validate dependencies before building
         self._validate_dependencies()
@@ -570,9 +593,11 @@ class ServiceProvider:
         self._walk_dependencies(self._dependencies, strict=False, collect_order=False)
 
         to_build = [d for d in self._dependencies if d.lifetime == Lifetime.Singleton]
-        # strict ordered pass over the singletons we actually instantiate
+        # strict ordered pass validates/orders all singletons, even lazy ones
         sorted_deps = self._walk_dependencies(to_build, strict=True, collect_order=True)
         for reg in sorted_deps:
+            if not (reg.factory or reg.eager):
+                continue
             if reg.instance is None:
                 if reg.factory:
                     inst = reg.factory(self)
@@ -581,8 +606,8 @@ class ServiceProvider:
                 else:
                     inst = await reg.activate_async(self)
                 reg.instance = inst
-                with self._cache_lock:
-                    self._singleton_instances[reg.dependency_type] = inst
+            with self._cache_lock:
+                self._singleton_instances[reg.dependency_type] = reg.instance
         return self
 
     def create_scope(self) -> 'ServiceScope':
