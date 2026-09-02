@@ -291,17 +291,50 @@ with provider.create_scope() as scope:
 
 ## Errors
 
-Container failures raise `Exception` with a descriptive message; there is no bespoke exception hierarchy yet (see Roadmap). The checks that run:
+Every failure derives from `DepiError`, so you can catch depi without catching everything. The split is by *when* a failure happens, because that maps to who fixes it — a registration error means the container was described wrongly and shows up at startup; a resolution error means it was asked for something it could not produce.
 
-| Condition | Message |
+```
+DepiError
+├── RegistrationError          raised at registration / build time
+│   ├── MissingAnnotationError
+│   ├── CircularDependencyError
+│   ├── InvalidLifetimeError
+│   └── UnknownLifetimeError
+└── ResolutionError            raised at resolve time
+    ├── UnregisteredDependencyError
+    ├── ScopeRequiredError
+    └── AsyncFactoryError
+
+NoActiveScopeError             DepiError, raised by current_scope()
+```
+
+| Condition | Raises |
 | --- | --- |
-| Cycle in the graph, at `build_provider()` | `Cyclic dependency detected: A` |
-| Dependency never registered | `Failed to locate registration for 'Missing'` |
-| Constructor parameter without an annotation | `Missing type annotation for parameter 'x' in NoAnn` |
-| Singleton depending on a scoped service | `Singleton 'X' cannot depend on scoped 'Y'...` |
-| Scoped resolution without a scope | `Scoped resolution requires a scope. Call provider.create_scope().` |
+| Constructor parameter without an annotation | `MissingAnnotationError` |
+| Cycle in the graph, at `build_provider()` | `CircularDependencyError` |
+| Singleton depending on a scoped or transient service | `InvalidLifetimeError` |
+| Dependency never registered | `UnregisteredDependencyError` |
+| Scoped resolution without a scope | `ScopeRequiredError` |
+| Async factory resolved through `resolve()` | `AsyncFactoryError` |
+| Request scope needed outside a request | `NoActiveScopeError` |
 
-Reaching for the request scope outside a request raises `NoActiveScopeError`, which subclasses `RuntimeError`.
+Cycles are detected by static analysis at build time, and the message names the whole chain — trimmed to the cycle itself, so a class that merely depends on a loop is not blamed for it:
+
+```
+CircularDependencyError: Cyclic dependency detected: Order -> Invoice -> Customer -> Order
+```
+
+```python
+from depi import DepiError, RegistrationError, UnregisteredDependencyError
+
+try:
+    provider = services.build_provider()
+except RegistrationError as exc:
+    # Wiring is wrong -- fail startup loudly rather than serving traffic.
+    raise SystemExit(f'container misconfigured: {exc}')
+```
+
+**Backwards compatible.** These previously raised bare `Exception`, and `RuntimeError` for the async-factory guard. Every class still derives from what it used to be, so existing `except Exception` and `except RuntimeError` handlers keep working — `AsyncFactoryError` and `NoActiveScopeError` both still subclass `RuntimeError`.
 
 ## Performance
 
@@ -367,11 +400,14 @@ Adapters build against `depi.integration.BaseInjector` and `depi.context`, and p
 
 ## Roadmap
 
-- **Errors**: a real exception hierarchy in place of bare `Exception`, and full dependency chains in cycle messages
 - **Performance**: Cython optimization targeting ~90-100ns resolution to match `dependency-injector`
 - **Memory**: optimize metadata storage and allocation patterns
 - **Frameworks**: aiohttp integration
 - **Tooling**: debug visualizations and dependency graph analysis
+
+## Changelog
+
+Per-package release notes are in [CHANGELOG.md](CHANGELOG.md); release mechanics are in [RELEASING.md](RELEASING.md). Known gaps and outstanding work are tracked in [BACKLOG.md](BACKLOG.md).
 
 ## Contributing
 

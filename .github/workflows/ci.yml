@@ -232,6 +232,9 @@ jobs:
       # findings that are not worth gating merges on.
       - run: ruff check packages --select F,E9
 
+      - name: No package source is excluded by .gitignore
+        run: python scripts/check_sources_tracked.py
+
   benchmarks:
     # Informational only. Never gates a merge -- benchmark numbers move with
     # runner noise, and a slow runner is not a broken container.

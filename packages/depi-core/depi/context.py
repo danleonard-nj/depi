@@ -16,6 +16,10 @@ from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from typing import TYPE_CHECKING, Iterator, Optional
 
+# Defined in exceptions.py so the whole hierarchy lives in one place; re-exported
+# here because this is where it is raised and where callers expect to find it.
+from .exceptions import NoActiveScopeError
+
 if TYPE_CHECKING:
     from .services import ServiceScope
 
@@ -32,15 +36,6 @@ __all__ = [
 _current_scope: ContextVar[Optional['ServiceScope']] = ContextVar(
     'depi_current_scope', default=None
 )
-
-
-class NoActiveScopeError(RuntimeError):
-    """
-    Raised when a scope is required but none is bound to the current context.
-
-    Subclasses RuntimeError so existing ``except RuntimeError`` handlers keep
-    working.
-    """
 
 
 def get_current_scope() -> Optional['ServiceScope']:

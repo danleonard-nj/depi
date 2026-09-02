@@ -60,9 +60,11 @@ Worth doing once for `pydepi` alone, to watch the pipeline work end to end. Not 
 
 ## Cutting a release
 
-### 1. Bump the version
+### 1. Bump the version and update the changelog
 
-Edit `version` in that package's `pyproject.toml`. The workflow refuses to publish if the tag and the `pyproject.toml` disagree, so this cannot silently drift.
+Edit `version` in that package's `pyproject.toml`, and move that package's `unreleased` heading in [CHANGELOG.md](CHANGELOG.md) to the version and date you are shipping.
+
+The workflow refuses to publish if the tag and the `pyproject.toml` disagree, so the version cannot silently drift. The changelog is not enforced — it is on you.
 
 ### 2. Tag and push
 

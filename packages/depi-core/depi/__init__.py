@@ -13,12 +13,24 @@ Adapters build on :mod:`depi.context` and :mod:`depi.integration`.
 """
 
 from .context import (
-    NoActiveScopeError,
     current_scope,
     get_current_scope,
     reset_current_scope,
     set_current_scope,
     use_scope,
+)
+from .exceptions import (
+    AsyncFactoryError,
+    CircularDependencyError,
+    DepiError,
+    InvalidLifetimeError,
+    MissingAnnotationError,
+    NoActiveScopeError,
+    RegistrationError,
+    ResolutionError,
+    ScopeRequiredError,
+    UnknownLifetimeError,
+    UnregisteredDependencyError,
 )
 from .services import (
     ConstructorDependency,
@@ -39,10 +51,22 @@ __all__ = [
     'DependencyRegistration',
 
     # Ambient scope
-    'NoActiveScopeError',
     'current_scope',
     'get_current_scope',
     'set_current_scope',
     'reset_current_scope',
     'use_scope',
+
+    # Errors
+    'DepiError',
+    'RegistrationError',
+    'MissingAnnotationError',
+    'CircularDependencyError',
+    'InvalidLifetimeError',
+    'UnknownLifetimeError',
+    'ResolutionError',
+    'UnregisteredDependencyError',
+    'ScopeRequiredError',
+    'AsyncFactoryError',
+    'NoActiveScopeError',
 ]
