@@ -8,7 +8,7 @@ Update the relevant section **before** tagging a release — the tag and the pac
 
 ## pydepi
 
-### [0.1.0] — unreleased
+### [0.1.0] — 2026-09-02
 
 First public release. The container itself has no dependencies.
 
@@ -23,6 +23,7 @@ First public release. The container itself has no dependencies.
 - `depi.integration.BaseInjector`: the contract every framework adapter builds on, including the `param_name` and `autowire` options.
 - `depi.exceptions`: a typed hierarchy rooted at `DepiError`, split into `RegistrationError` (startup — the container was described wrongly) and `ResolutionError` (resolve time — it was asked for something it could not produce). Every class also derives from the type it previously raised, so `except Exception` and `except RuntimeError` handlers keep working.
 - `ServiceProvider.is_registered` / `ServiceScope.is_registered`, used by adapters to tell a service parameter from one the web framework will supply.
+- Autowire introspection evaluates annotations with `eval_str=True`, so it works under `from __future__ import annotations` (PEP 563), where every annotation is a string. A parameter whose annotation cannot be evaluated — an unimportable forward reference, a builtin with no retrievable signature — is left for the framework to supply rather than raising at import time.
 
 #### Fixed
 
@@ -30,11 +31,15 @@ First public release. The container itself has no dependencies.
 - The async-factory guard now closes the coroutine before raising. Abandoning it emitted `RuntimeWarning: coroutine ... was never awaited` on top of the exception, pointing at the wrong thing.
 - Cycle errors name the whole chain (`Order -> Invoice -> Customer -> Order`) instead of only the type where detection happened. The message is trimmed to the cycle itself, so a class that merely depends on a loop is not blamed for it.
 
+#### Notes
+
+- **A scope disposes what it owns.** Exiting a scope calls `dispose()` on the scoped instances it constructed. Transients are handed back untracked, and singletons belong to the provider, so neither is disposed by a scope. This differs from .NET, where a container disposes transients it created; depi does not hold that reference. Own a transient's cleanup yourself, or register it as scoped. See `docs/concepts/disposal.md`.
+
 ---
 
 ## pydepi-flask
 
-### [0.1.0] — unreleased
+### [0.1.0] — 2026-09-02
 
 #### Added
 
@@ -51,7 +56,7 @@ First public release. The container itself has no dependencies.
 
 ## pydepi-quart
 
-### [0.1.0] — unreleased
+### [0.1.0] — 2026-09-02
 
 #### Added
 
@@ -62,7 +67,7 @@ First public release. The container itself has no dependencies.
 
 ## pydepi-fastapi
 
-### [0.1.0] — unreleased
+### [0.1.0] — 2026-09-02
 
 #### Added
 
@@ -77,7 +82,7 @@ First public release. The container itself has no dependencies.
 
 ## pydepi-django
 
-### [0.1.0] — unreleased
+### [0.1.0] — 2026-09-02
 
 #### Added
 

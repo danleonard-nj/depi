@@ -202,7 +202,14 @@ async def test_scope_is_disposed_when_the_view_raises(app, provider):
         provider.resolve(Disposable)
         raise RuntimeError('handler failed')
 
-    await app.test_client().get('/boom')
+    # Quart is inconsistent across versions about what a failing view does to
+    # the test client: 0.19 and 0.20 let the exception propagate, while 0.18
+    # and 0.22+ turn it into a 500. Both are Quart's business. What depi has to
+    # guarantee either way is that the scope is torn down.
+    try:
+        await app.test_client().get('/boom')
+    except RuntimeError:
+        pass
 
     assert len(DISPOSED) == 1
     with pytest.raises(NoActiveScopeError):
