@@ -53,11 +53,10 @@ The difference is discipline, not capability:
 | Can the class be built in a plain test? | no — needs a configured locator | yes — it just takes constructor args |
 | Dependencies of a class | hidden inside its body | visible in its signature |
 
-**A service locator is never the better design**, but it is less work to
-retrofit into an existing codebase that already reaches for globals. `depi`'s
-position is that constructor injection is worth the up-front restructuring; if
-you disagree for a given codebase, a locator and `depi`-as-locator are
-equivalent.
+**A service locator can be a smaller retrofit** for a codebase that already
+reaches for globals. The tradeoff is that dependencies remain hidden inside
+method bodies. Used as a locator, `depi` has the same tradeoff; constructor
+injection is a usage choice rather than a restriction the container enforces.
 
 ## Dependency Injector
 

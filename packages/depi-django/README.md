@@ -23,4 +23,4 @@ pip install pydepi[django]
 from depi_django import DjangoInjector
 ```
 
-See the [main README](https://github.com/danleonard-nj/depi#framework-integrations) for the full integration guide.
+See the [Django integration guide](https://danleonard-nj.github.io/depi/integrations/django/) for the full walkthrough.

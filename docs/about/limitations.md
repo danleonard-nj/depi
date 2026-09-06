@@ -39,12 +39,13 @@ interfaces) and depend on them individually.
 One registration per type. Registering a type twice replaces the first. There is
 no `add_singleton(Cache, RedisCache, name="primary")`.
 
-### No decorator/interception layer
+### No interception or proxy layer
 
 `depi` constructs objects; it does not wrap them in proxies, apply
-cross-cutting decorators, or intercept method calls. Decoration is done by
-registering a decorator class that takes the inner service as a constructor
-parameter.
+cross-cutting wrappers, or intercept method calls. A decorator class can still
+be registered explicitly around an inner service. Optional decorator-based
+registration syntax would be a separate concern; it is not prohibited by this
+non-goal and is not part of the current API.
 
 ### No auto-registration / scanning
 
@@ -54,7 +55,7 @@ Python; `register_many([...])` is as automatic as it gets.
 ### Not a service locator, by intent
 
 `ServiceProvider` can be called from anywhere, but the design intent is that it
-is not — see [Design philosophy](index.md#why-the-container-stays-at-the-composition-boundary).
+is not — see [Architecture](../architecture/index.md#the-boundary).
 The library does not enforce this.
 
 ### `Lifetime` is not an enum
@@ -91,13 +92,6 @@ The Django adapter's async path is tested at the middleware level (that
 `DepiScopeMiddleware` returns a coroutine function for an async `get_response`),
 but has never served a request through a real ASGI server (uvicorn, daphne).
 
-### Benchmark figures are from one noisy machine
-
-The performance numbers in the [README](https://github.com/danleonard-nj/depi#performance)
-are a single run on a laptop that was also running test suites. Repeat runs
-differed by 8–54% in absolute terms; the *ratios* held within a few percent,
-which is why the README leads with ratios.
-
 ### No aiohttp adapter
 
 Four adapters exist (Flask, Quart, FastAPI, Django). aiohttp is on the backlog,
@@ -105,21 +99,11 @@ not shipped.
 
 ## Maturity
 
-- **Version:** `pydepi` 0.1.0; the four adapters 0.1.0. All marked
-  `Development Status :: 4 - Beta` in package metadata.
-- **On PyPI.** All five distributions — `pydepi`, `pydepi-flask`,
-  `pydepi-quart`, `pydepi-fastapi`, `pydepi-django` — are published at 0.1.0.
-  `pip install pydepi` installs the core; each adapter is its own install.
-- **Trove classifiers on the adapters stop at Python 3.12.** `requires-python`
-  is `>=3.10`, and CI runs the core on 3.10–3.14; `pydepi-quart` also claims
-  3.13. Flask, FastAPI and Django only run on 3.12 in CI, so their metadata does
-  not claim more until a 3.13 cell is added. `pydepi` 0.1.0 shipped before its
-  own 3.13 / 3.14 classifiers were applied — those land in 0.1.1.
-- **No `LICENSE` file** is present at the repository root, though `pyproject.toml`
-  and the READMEs state MIT.
-- The **container design** itself is older than the packaging: developed since
-  2020, with a same-design predecessor in production since 2022. The 0.1.0 label
-  is on the *distribution*, not the approach.
+The core and four adapters are version 0.1.0 and marked Beta. The container
+design has been developed since 2020, with a same-design predecessor used in a
+production service since 2022. See [About](index.md#provenance-and-maturity) for
+the verified history; treat the current package version as the compatibility
+signal.
 
 ## Versioning
 

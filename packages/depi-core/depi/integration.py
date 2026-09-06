@@ -84,7 +84,7 @@ class BaseInjector(ABC):
             param_name: the keyword argument the request scope is passed as in
                 the default (non-autowire) mode. Name it to taste -- ``container``
                 is a common alternative.
-            autowire: when True, :meth:`inject` resolves registered types by
+            autowire: when True, ``inject`` resolves registered types by
                 annotation instead of passing the scope. Not supported by every
                 integration; FastAPI rejects it outright.
         """

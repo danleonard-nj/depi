@@ -6,6 +6,8 @@ synchronous counterparts, so the guarantees the sync side is tested for have to
 be asserted here too rather than assumed to carry over.
 """
 
+import asyncio
+
 import pytest
 
 from depi import (
@@ -79,6 +81,39 @@ async def test_async_constructor_injection_resolves_dependencies():
 
     client = await provider.resolve_async(Client)
     assert client.config.name == 'config'
+
+
+@pytest.mark.asyncio
+async def test_async_factory_resolves_inside_a_multi_level_mixed_graph():
+    """A sync constructor chain can contain an async dependency several levels down."""
+
+    class Credentials:
+        def __init__(self, token):
+            self.token = token
+
+    class ApiClient:
+        def __init__(self, credentials: Credentials):
+            self.credentials = credentials
+
+    class ReportService:
+        def __init__(self, client: ApiClient):
+            self.client = client
+
+    async def credentials_factory(scope) -> Credentials:
+        await asyncio.sleep(0)
+        return Credentials(scope.resolve(Config).name)
+
+    services = ServiceCollection()
+    services.add_singleton(Config)
+    services.add_scoped(Credentials, factory=credentials_factory)
+    services.add_transient(ApiClient)
+    services.add_transient(ReportService)
+    provider = services.build_provider()
+
+    async with provider.create_scope() as scope:
+        reports = await scope.resolve_async(ReportService)
+
+    assert reports.client.credentials.token == 'config'
 
 
 @pytest.mark.asyncio
@@ -201,8 +236,6 @@ async def test_concurrent_async_resolution_creates_one_singleton():
     coroutines must find the instance already built rather than each building
     their own.
     """
-    import asyncio
-
     constructed = []
 
     class SlowSingleton:
@@ -223,6 +256,74 @@ async def test_concurrent_async_resolution_creates_one_singleton():
 
     assert len(constructed) == 1, f'built {len(constructed)} times under contention'
     assert all(r is results[0] for r in results)
+
+
+@pytest.mark.asyncio
+async def test_unrelated_async_singleton_factories_initialize_concurrently():
+    """Per-type locks must allow independent singleton construction to overlap."""
+    active = 0
+    peak = 0
+
+    class First:
+        pass
+
+    class Second:
+        pass
+
+    async def build(service_type):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        return service_type()
+
+    async def first_factory(provider) -> First:
+        return await build(First)
+
+    async def second_factory(provider) -> Second:
+        return await build(Second)
+
+    services = ServiceCollection()
+    services.add_singleton(First, factory=first_factory)
+    services.add_singleton(Second, factory=second_factory)
+    provider = ServiceProvider(services)  # leave both factories lazy
+
+    first, second = await asyncio.gather(
+        provider.resolve_async(First),
+        provider.resolve_async(Second),
+    )
+
+    assert isinstance(first, First)
+    assert isinstance(second, Second)
+    assert peak == 2
+
+
+@pytest.mark.asyncio
+async def test_async_scope_cleans_prior_resources_when_later_construction_fails():
+    cleaned = []
+
+    class Resource:
+        async def __aexit__(self, *exc):
+            cleaned.append(True)
+
+    class Broken:
+        pass
+
+    async def broken_factory(scope) -> Broken:
+        await scope.resolve_async(Resource)
+        raise RuntimeError('construction failed')
+
+    services = ServiceCollection()
+    services.add_scoped(Resource)
+    services.add_transient(Broken, factory=broken_factory)
+    provider = services.build_provider()
+
+    with pytest.raises(RuntimeError, match='construction failed'):
+        async with provider.create_scope() as scope:
+            await scope.resolve_async(Broken)
+
+    assert cleaned == [True]
 
 
 @pytest.mark.asyncio

@@ -1,12 +1,11 @@
 # Tutorial
 
-This builds a small but complete application — a URL shortener — one layer at a
-time, and wires it with `depi`. By the end you will have run it as a script, put
-it behind a web framework, and tested it with the infrastructure swapped out.
+Build a URL shortener one step at a time, wire it with `depi`, run it as a
+script, serve it through a web framework, and replace its storage in tests.
 
-It is slower-paced than [Getting started](../getting-started.md) and covers more
-ground: the three lifetimes, a factory, a request scope, disposal, and a
-framework integration, in the context of an app rather than in isolation.
+The tutorial covers all three lifetimes, a factory, a request scope, disposal,
+and a framework integration. For the reasoning behind the composition boundary,
+see [Architecture](../architecture/index.md).
 
 ## What we build
 
@@ -55,12 +54,5 @@ pip install pydepi
 Step 4 also needs a web framework — `pip install pydepi-flask` (or `-quart`,
 `-fastapi`, `-django`). Everything before that is plain Python.
 
-The code in each step is written to run. Copy it into the file named at the top
-of the step and you can execute the checkpoint at the end.
-
-!!! note "Relationship to the Architecture chapter"
-
-    The [Architecture](../architecture/index.md) chapter builds a *different*
-    app (user registration) with the same layering, as a reference for the
-    structure. This tutorial is the hands-on version: a different domain, more
-    steps, runnable checkpoints. Read either first.
+The code in each step is written to run. Copy it into the named file, then use
+the checkpoint at the end of the step.

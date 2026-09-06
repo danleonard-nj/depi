@@ -5,34 +5,55 @@ resolve them correctly.
 
 Background: [Async](../concepts/async.md).
 
-## An async factory for a client that connects
+## An async dependency inside a larger graph
 
 ```python
-async def make_search_client(provider) -> SearchClient:
-    config = provider.resolve(AppConfig)
-    client = SearchClient(config.search_url)
-    await client.connect()
-    return client
+from dataclasses import dataclass
+from depi import ServiceCollection
 
-services.add_singleton(SearchClient, factory=make_search_client)
+@dataclass
+class Credentials:
+    token: str
+
+class CredentialProvider:
+    async def obtain(self) -> Credentials:
+        # Network or process I/O would happen here.
+        return Credentials(token="ready")
+
+class ApiClient:
+    def __init__(self, credentials: Credentials):
+        self.credentials = credentials
+
+class ReportService:
+    def __init__(self, client: ApiClient):
+        self.client = client
+
+async def make_credentials(scope) -> Credentials:
+    provider = scope.resolve(CredentialProvider)
+    return await provider.obtain()
+
+services = ServiceCollection()
+services.add_singleton(CredentialProvider)
+services.add_scoped(Credentials, factory=make_credentials)
+services.add_transient(ApiClient)
+services.add_transient(ReportService)
+provider = services.build_provider()
 ```
-
-As a **singleton**, this runs once during `build_provider()` — `depi` executes
-the coroutine to completion there — so application code just calls
-`await provider.resolve_async(SearchClient)` (or even `resolve()`, since it is
-already built) and gets the connected client.
-
-As **scoped** or **transient**, it runs per resolution and *must* be reached
-through `resolve_async`:
 
 ```python
-services.add_scoped(SearchClient, factory=make_search_client)
-# ...
-client = await scope.resolve_async(SearchClient)
+async with provider.create_scope() as scope:
+    reports = await scope.resolve_async(ReportService)
+    assert reports.client.credentials.token == "ready"
 ```
 
-`scope.resolve(SearchClient)` here raises
-[`AsyncFactoryError`][depi.AsyncFactoryError].
+`ReportService` and `ApiClient` have ordinary synchronous constructors. The
+async path reaches the `Credentials` factory several levels down, awaits it, and
+then finishes the graph. `scope.resolve(ReportService)` would raise
+[`AsyncFactoryError`][depi.AsyncFactoryError] when it reached that factory.
+
+For a **singleton** async factory, `build_provider()` runs the coroutine to
+completion once. Scoped and transient async factories run during resolution and
+must be reached through `resolve_async`.
 
 ## Async cleanup on a scoped service
 
@@ -93,8 +114,10 @@ cfg_b = await provider.resolve_async(AppConfig)
 assert cfg_a is cfg_b
 ```
 
-A singleton constructor may `await provider.resolve_async(...)` for another
-singleton; construction is serialised per type, so this does not deadlock.
+A singleton dependency chain can call `resolve_async` recursively without a
+global-lock deadlock. Concurrent calls for the same uninitialized singleton
+produce one instance; unrelated types have separate locks and can initialize at
+the same time.
 
 ## What has no async form
 

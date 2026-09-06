@@ -1,42 +1,35 @@
-# depi – Dependency Injection for Python
+<p align="center">
+  <img src="docs/assets/depi-logo.png" width="320" alt="depi">
+</p>
 
-`depi` is a type-safe dependency injection container that resolves dependency graphs from constructor type annotations. It is **100% pure Python** — no C extensions, no build step, no per-platform wheels — and the core has **zero dependencies**. Framework support ships as separate, independently versioned packages.
+<h1 align="center">depi</h1>
 
-**Documentation:** <https://danleonard-nj.github.io/depi/> (source under [`docs/`](docs/), built with MkDocs).
+<p align="center"><strong>Dependency injection for Python, resolved from your constructor type hints.</strong></p>
 
-It started as a .NET habit that Python was missing. `ServiceCollection`, `ServiceProvider`, and the singleton / scoped / transient split come straight from `Microsoft.Extensions.DependencyInjection` — that model works, and there was no reason to invent another one.
+<p align="center">
+  <a href="https://pypi.org/project/pydepi/"><img src="https://img.shields.io/pypi/v/pydepi.svg" alt="PyPI"></a>
+  <a href="https://pypi.org/project/pydepi/"><img src="https://img.shields.io/pypi/pyversions/pydepi.svg" alt="Python versions"></a>
+  <a href="https://github.com/danleonard-nj/depi/actions/workflows/ci.yml"><img src="https://github.com/danleonard-nj/depi/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
+</p>
 
-It has been in iterative development since 2020 and running in production since 2022 ([lineage](https://github.com/danleonard-nj/framework/tree/main/framework/di)), where it wires a service of **120+ registrations** from a single container. It scales down just as well: a three-service script and a hundred-service application use the same API, and resolution cost tracks the depth of what you asked for, not the size of the container.
+---
 
-## Packages
+`depi` builds your object graph from constructor annotations — no wiring configuration, no decorators on your classes, no base classes. The core is **100% pure Python with zero dependencies**: one `py3-none-any` wheel, no compiler, nothing to rebuild for a new platform or interpreter.
 
-This repository is a monorepo. Each package is its own distribution with its own release cadence, so a framework changing under an adapter never forces a core release — and never drags a web framework into an application that only wanted the container.
+It has been in iterative development since 2020 and running in production since 2022 ([lineage](https://github.com/danleonard-nj/framework/tree/main/framework/di)), where it wires a service of **120+ registrations** from a single container — at roughly **2.5x the per-resolution cost of a compiled Cython extension** ([benchmarks](#performance)). It scales down just as well: resolution cost tracks the depth of what you asked for, not the size of the container.
 
-| Package          | Import         | Depends on          |
-| ---------------- | -------------- | ------------------- |
-| `pydepi`         | `depi`         | *nothing*           |
-| `pydepi-flask`   | `depi_flask`   | `pydepi`, `flask`   |
-| `pydepi-quart`   | `depi_quart`   | `pydepi`, `quart`   |
-| `pydepi-fastapi` | `depi_fastapi` | `pydepi`, `fastapi` |
-| `pydepi-django`  | `depi_django`  | `pydepi`, `django`  |
+📖 **[Full documentation](https://danleonard-nj.github.io/depi/)** — tutorial, concepts, guides, and API reference.
 
-Tests for every package live together under `tests/`, so an adapter breaking against a new framework release is caught immediately — but they run as separate CI jobs, so a broken adapter cannot turn the core suite red.
-
-## Installation
+## Install
 
 ```bash
 pip install pydepi
 ```
 
-`pip install pydepi` pulls in nothing else. Framework support is a separate install:
+Nothing else comes with it. Framework support is a separate install — see [Packages](#packages).
 
-```bash
-pip install pydepi-flask
-```
-
-Extras are also accepted as an alias — `pydepi[flask]`, `[quart]`, `[fastapi]`, `[django]`, `[all]` — but the name above is the more accurate form, since these are distinct distributions with their own versions rather than optional features of core.
-
-## Quick Start
+## Quick start
 
 ```python
 from depi import ServiceCollection
@@ -64,63 +57,26 @@ user_service = provider.resolve(UserService)
 
 Every constructor parameter must carry a type annotation; an unannotated parameter is an error at registration time rather than a surprise at resolution time.
 
-### Registration Forms
+The vocabulary — `ServiceCollection`, `ServiceProvider`, and the singleton / scoped / transient split — comes straight from .NET's `Microsoft.Extensions.DependencyInjection`. That model works, and there was no reason to invent another one.
 
-```python
-services.add_singleton(ILogger, ConsoleLogger)        # interface -> implementation
-services.add_singleton(ILogger, instance=my_logger)   # pre-built instance
-services.add_scoped(Repository, factory=repo_factory) # factory (see below)
-services.register_many([UserService, OrderService], lifetime=Lifetime.Singleton)
+## What you get
 
-provider = services.build_provider(eager_all=True)    # construct singletons at build time
-```
+- **Three lifetimes.** Transient (new on every resolution), singleton (one per provider), scoped (one per scope, typically per request). Scopes are context managers that dispose what they own, and `async with` awaits async cleanup first. → [Lifetimes and scopes](https://danleonard-nj.github.io/depi/concepts/lifetimes-and-scopes/)
+- **Validation before use.** `build_provider()` walks the whole graph: cycles, missing registrations, and singletons depending on shorter-lived services fail at startup rather than in traffic. → [The dependency graph](https://danleonard-nj.github.io/depi/concepts/dependency-graph/)
+- **Async throughout.** Async factories, `resolve_async`, mixed sync/async graphs, coroutine-safe singleton creation, and awaited scoped teardown. → [Async](https://danleonard-nj.github.io/depi/concepts/async/)
+- **Factories for what annotations cannot reach.** A factory takes one argument — the provider or scope — and resolves what it needs. This is how third-party SDK clients get wired. → [Factories](https://danleonard-nj.github.io/depi/concepts/factories/)
+- **The container stays at the boundary.** Application classes take plain constructor arguments; they never import `depi` or call `resolve()`. → [Architecture](https://danleonard-nj.github.io/depi/architecture/)
 
-## Lifetimes
-
-- **Transient** – a new instance on every resolution
-- **Singleton** – one instance for the life of the provider
-- **Scoped** – one instance per scope, typically per HTTP request
-
-Scopes are context managers, and disposal is explicit:
-
-```python
-with provider.create_scope() as scope:
-    repo = scope.resolve(Repository)   # same instance for the whole block
-# scope disposed here: dispose() is called on any scoped instance that defines it
-```
-
-Async cleanup is supported too — `async with provider.create_scope()` awaits `__aexit__` on scoped instances before disposing them.
-
-### What a scope does and does not own
-
-A scope disposes **only its scoped instances**. Two deliberate consequences:
-
-- **Transients are not disposed by the scope.** This diverges from `Microsoft.Extensions.DependencyInjection`, which tracks transient `IDisposable`s on the scope that created them — a well-known way to accumulate objects for the lifetime of a long-lived scope. In `depi`, a transient's lifetime belongs to whoever asked for it. If a transient holds a resource, manage it yourself (`with`, `try/finally`, or make it scoped).
-- **Singletons are never disposed by a scope**, since they outlive it. They belong to the provider.
-
-A disposer that raises does not abort the rest: the failure is logged and disposal continues, because a scope is torn down inside a framework's teardown hook where an escaping exception would surface somewhere unhelpful.
-
-## Framework Integrations
+## Framework integrations
 
 Every adapter does the same three things: open a scope per request, bind it to the ambient context, and dispose it when the request ends. What differs is how the scope reaches your view.
 
-### Two injection modes
-
-**Provider injection (default).** The request scope is handed to the view and you resolve from it explicitly. Works with every framework.
-
-**Autowire (opt-in).** Parameters annotated with registered types are resolved and passed individually. Parameters the container doesn't know about are left for the framework to fill — that's how URL arguments still work. **Not available on FastAPI**, which reads endpoint signatures to build request parsing and the OpenAPI schema, and raises at decoration time on any annotation it cannot treat as a Pydantic field.
-
-### Flask
-
 ```python
 from flask import Flask
-from depi import ServiceCollection
 from depi_flask import FlaskInjector
 
 app = Flask(__name__)
-provider = services.build_provider()
-
-injector = FlaskInjector(provider)
+injector = FlaskInjector(services.build_provider())
 injector.setup(app)
 
 @app.route('/users/<user_id>')
@@ -129,264 +85,51 @@ def get_user(user_id, provider):
     return provider.resolve(UserService).get(user_id)
 ```
 
-With autowire:
+| Framework | Package | How the scope reaches the view | Guide |
+| --- | --- | --- | --- |
+| Flask | `pydepi-flask` | injected argument, or autowire by annotation | [Flask](https://danleonard-nj.github.io/depi/integrations/flask/) |
+| Quart | `pydepi-quart` | the same, with async views | [Quart](https://danleonard-nj.github.io/depi/integrations/quart/) |
+| FastAPI | `pydepi-fastapi` | `Depends(injector.get_scope)` — your endpoint signature is untouched | [FastAPI](https://danleonard-nj.github.io/depi/integrations/fastapi/) |
+| Django | `pydepi-django` | middleware + `@injector.inject`, on both the sync and async paths | [Django](https://danleonard-nj.github.io/depi/integrations/django/) |
 
-```python
-injector = FlaskInjector(provider, autowire=True)
-injector.setup(app)
+**Autowire** (opt-in) resolves annotated parameters and passes them individually, leaving URL arguments for the framework to fill. It is **not available on FastAPI**, which reads endpoint signatures to build request parsing and the OpenAPI schema, and raises at decoration time on any annotation it cannot treat as a Pydantic field.
 
-@app.route('/users/<user_id>')
-@injector.inject
-def get_user(user_id, users: UserService):   # user_id stays Flask's
-    return users.get(user_id)
+Anything running inside a request can also reach the scope directly through `current_scope()`, without it being threaded through. → [Integrations](https://danleonard-nj.github.io/depi/integrations/)
+
+## Performance
+
+`dependency-injector` is a **Cython extension** — its `providers`, `containers` and `_cwiring` modules ship as compiled binaries, so its resolution runs as native code. `depi` is pure Python, and every figure below is interpreted bytecode measured against compiled C.
+
+Measured with `pytest-benchmark` on a 12th Gen Intel i7-12800H, Python 3.11.5, against `dependency-injector` 4.48.1:
+
+| Metric                  | `depi` | `dependency-injector` | Ratio           |
+| ----------------------- | ------ | --------------------- | --------------- |
+| Simple resolution (ns)  | 308.4  | 121.9                 | 2.5x slower     |
+| Complex resolution (ns) | 284.0  | 117.5                 | 2.4x slower     |
+| Container setup (µs)    | 30.0   | 149.4                 | **5.0x faster** |
+| Memory allocation (µs)  | 18.4   | 9.2                   | 2.0x slower     |
+
+![depi vs dependency-injector benchmarks](tests/benchmarks.png)
+
+**Read the ratios, not the absolute figures.** Repeat runs on the same machine have differed by 8–54% depending on what else was running, while the ratios above held within a few percent across runs. Anyone reproducing these on their own hardware should expect different nanosecond counts and similar proportions.
+
+**What the trade buys**: roughly 2.5x the per-resolution cost of a compiled C extension, in exchange for pure-Python portability and dependency graphs resolved from type annotations with no wiring configuration. Setup is ~5x faster, which favours workloads that build containers often — test suites especially. Resolution cost stays flat as graphs deepen: the complex-graph figure is no worse than the simple one.
+
+On a real container of 98 registrations, four levels deep, `build_provider()` takes **0.28 ms** — paid once, at startup — a singleton `resolve()` takes **0.17 µs**, and a 25-level transient chain takes **14.9 µs**, about 0.6 µs per level. A hundred-service container resolves a shallow dependency exactly as fast as a three-service one.
+
+Reproduce:
+
+```bash
+pytest tests/benchmarks --benchmark-enable --benchmark-warmup=on --benchmark-json=tests/benchmark_results.json
 ```
 
-### Quart
-
-Identical to Flask, with async views. `inject` uses `functools.wraps`, so it composes inside a decorator stack — route registration, authentication, response handling — without the outer layers losing the view's identity:
-
-```python
-from depi_quart import QuartInjector
-
-injector = QuartInjector(provider, param_name='container')
-injector.setup(app)
-
-@app.route('/users/<user_id>')
-@injector.inject
-async def get_user(user_id, container):
-    users = await container.resolve_async(UserService)
-    return await users.get(user_id)
+```bash
+python tests/plot_benchmarks.py tests/benchmark_results.json
 ```
 
-`param_name` renames the injected keyword argument, so an existing convention (`container`, `services`, …) does not require a fork.
+## Thread safety
 
-### FastAPI
-
-FastAPI uses `Depends`, so depi never touches your endpoint signature and your OpenAPI schema stays clean:
-
-```python
-from fastapi import Depends, FastAPI
-from depi_fastapi import FastAPIInjector
-
-app = FastAPI()
-injector = FastAPIInjector(provider)
-injector.setup(app)
-
-@app.get('/users/{user_id}')
-async def get_user(user_id: str, scope=Depends(injector.get_scope)):
-    return scope.resolve(UserService).get(user_id)
-```
-
-Scope management is a pure ASGI middleware rather than an `http` middleware decorator, for two reasons: the contextvar is set in the same context the endpoint coroutine runs in, and disposal happens after the response body is sent rather than when the handler returns.
-
-### Django
-
-Django builds middleware itself from a dotted path, so the injector registers itself at startup instead of being constructed inline:
-
-```python
-# apps.py
-from django.apps import AppConfig
-from depi_django import DjangoInjector
-
-class MyAppConfig(AppConfig):
-    name = 'myapp'
-
-    def ready(self):
-        DjangoInjector(build_provider()).setup()
-
-# settings.py
-MIDDLEWARE = ['depi_django.DepiScopeMiddleware', ...]
-
-# views.py
-@injector.inject
-def get_user(request, user_id, provider):
-    return JsonResponse(provider.resolve(UserService).get(user_id))
-```
-
-The middleware matches whatever `get_response` it is given, so both the sync and async request paths work.
-
-### Reaching the scope directly
-
-Anything running inside a request can reach the scope without it being threaded through:
-
-```python
-from depi import current_scope, get_current_scope, use_scope
-
-scope = current_scope()          # raises NoActiveScopeError if there is none
-scope = get_current_scope()      # returns None instead
-
-with use_scope(my_scope):        # bind manually, e.g. in a worker or a test
-    ...
-```
-
-## Factories
-
-A factory receives **one argument: the provider or scope**. Resolve what you need from it:
-
-```python
-def database_factory(provider) -> DatabaseConnection:
-    config = provider.resolve(AppConfig)
-    logger = provider.resolve(Logger)
-    if config.environment == 'production':
-        return ProductionDatabase(config.db_url, pool_size=config.db_pool_size, logger=logger)
-    return InMemoryDatabase(logger=logger)
-
-services.add_singleton(DatabaseConnection, factory=database_factory)
-```
-
-Async factories are supported and are awaited by `resolve_async`:
-
-```python
-async def client_factory(provider) -> HttpClient:
-    client = HttpClient(provider.resolve(AppConfig).api_base_url)
-    await client.connect()
-    return client
-
-services.add_singleton(HttpClient, factory=client_factory)
-client = await provider.resolve_async(HttpClient)
-```
-
-Singleton factories — async ones included — are constructed during `build_provider()`, so `resolve()` returns the finished instance. Transient and scoped factories run per resolution, and calling the synchronous `resolve()` on an async one raises a `RuntimeError` pointing at `resolve_async()` rather than handing back an un-awaited coroutine.
-
-## Registering One Instance Under Several Interfaces
-
-```python
-unified = UnifiedService(config, logger)
-services.add_singleton(IEmailService, instance=unified)
-services.add_singleton(ISMSService, instance=unified)
-services.add_singleton(IPushService, instance=unified)
-```
-
-Registering the same *factory* under several interfaces produces a separate instance per registration; share one by building it eagerly and registering the instance, as above.
-
-## Environment-Based Registration
-
-Registration is ordinary Python, so branching needs no special support:
-
-```python
-def configure_services(env: str) -> ServiceCollection:
-    services = ServiceCollection()
-    services.add_singleton(Logger)
-    services.add_singleton(AppConfig)
-
-    if env == 'prod':
-        services.add_singleton(IEmailService, ProductionEmailService)
-        services.add_singleton(ICache, RedisCache)
-    else:
-        services.add_singleton(IEmailService, MockEmailService)
-        services.add_singleton(ICache, InMemoryCache)
-
-    return services
-```
-
-## Scaling to Real Containers
-
-The API does not change as a container grows. The service this was built for registers **120+ dependencies** — SDK clients, repositories, domain services, speech and LLM providers, and typed configuration models — from a single container. These are the patterns that hold up at that size.
-
-### Group registrations by role
-
-Registration is ordinary Python, so split it into functions and compose them. This is the difference between a readable container and a thousand-line function:
-
-```python
-def register_configs(services: ServiceCollection): ...
-def register_factories(services: ServiceCollection): ...
-def register_repositories(services: ServiceCollection): ...
-def register_clients(services: ServiceCollection): ...
-def register_services(services: ServiceCollection): ...
-
-def build_container() -> ServiceProvider:
-    services = ServiceCollection()
-    services.add_singleton(Configuration)
-
-    register_configs(services)
-    register_factories(services)
-    register_repositories(services)
-    register_clients(services)
-    register_services(services)
-
-    return services.build_provider()
-```
-
-### Turn configuration sections into typed singletons
-
-One configuration object in, many validated models out — registered by a helper rather than by hand:
-
-```python
-def register_config(services: ServiceCollection, config_type: type, section: str):
-    """Validate one section of the app config into its own typed singleton."""
-    def factory(provider):
-        configuration = provider.resolve(Configuration)
-        return config_type.model_validate(getattr(configuration, section))
-
-    services.add_singleton(config_type, factory=factory)
-
-register_config(services, EmailConfig, 'email')
-register_config(services, StorageConfig, 'storage')
-register_config(services, StockMonitorConfig, 'stock_monitor')
-```
-
-Anything downstream then takes `EmailConfig` as a constructor parameter and gets a validated model, not a dictionary.
-
-### Wrap third-party clients in factories
-
-SDK clients rarely have annotated constructors depi can read, so give them a factory. The factory receives the provider, so it can resolve whatever it needs:
-
-```python
-def configure_mongo_client(provider) -> AsyncIOMotorClient:
-    configuration = provider.resolve(Configuration)
-    return AsyncIOMotorClient(configuration.mongo['connection_string'])
-
-def configure_http_client(provider) -> AsyncClient:
-    return AsyncClient(timeout=None, limits=Limits(max_connections=100))
-
-services.add_singleton(AsyncIOMotorClient, factory=configure_mongo_client)
-services.add_singleton(AsyncClient, factory=configure_http_client)
-```
-
-### Register providers by concrete type
-
-When several implementations share an interface and callers want a *specific* one, register each by its concrete type. Each still gets its own SDK client, config and cache injected:
-
-```python
-services.add_singleton(ChatGPTProvider)
-services.add_singleton(AnthropicLLMProvider)
-services.add_singleton(GoogleLLMProvider)
-```
-
-### What it costs at that size
-
-Measured on a container of 98 registrations, four levels deep:
-
-| | |
-| --- | --- |
-| `build_provider()` — whole graph validated, cycle-checked, ordered | **0.28 ms** |
-| `resolve()` of a singleton | **0.17 µs** |
-| `resolve()` of a 25-level transient chain (25 constructions per call) | **14.9 µs** — ~0.6 µs per level |
-
-Build cost is paid once, at startup. After that, resolution cost is a function of how deep the thing you asked for is, not how large the container is — a hundred-service container resolves a shallow dependency exactly as fast as a three-service one.
-
-## Testing
-
-Swap implementations at registration time:
-
-```python
-def test_services() -> ServiceCollection:
-    services = ServiceCollection()
-    services.add_transient(UserService)                          # real logic
-    services.add_singleton(DatabaseConnection, instance=Mock())  # mocked edges
-    return services
-
-def test_order_processing():
-    provider = test_services().build_provider()
-    assert provider.resolve(UserService).get('1') is not None
-```
-
-A view decorated with `inject` can be called directly, without a request, by passing the scope yourself — the ambient scope is only consulted for parameters you did not supply:
-
-```python
-with provider.create_scope() as scope:
-    response = get_user('user-1', provider=scope)
-```
+Singleton resolution is thread-safe; the provider uses an `RLock` so a singleton constructor can resolve further singletons without deadlocking. Coroutine-safe lazy singleton creation uses a per-type `asyncio.Lock`. Scoped instances are isolated per scope, and the ambient scope is a `ContextVar`, so it is isolated per thread and per task. Signature inspection for autowired views happens once at decoration time, not per request.
 
 ## Errors
 
@@ -406,72 +149,36 @@ flowchart TD
     DepiError -. "also RuntimeError, raised by current_scope()" .-> NoActiveScopeError
 ```
 
-| Condition | Raises |
-| --- | --- |
-| Constructor parameter without an annotation | `MissingAnnotationError` |
-| Cycle in the graph, at `build_provider()` | `CircularDependencyError` |
-| Singleton depending on a scoped or transient service | `InvalidLifetimeError` |
-| Dependency never registered | `UnregisteredDependencyError` |
-| Scoped resolution without a scope | `ScopeRequiredError` |
-| Async factory resolved through `resolve()` | `AsyncFactoryError` |
-| Request scope needed outside a request | `NoActiveScopeError` |
+Cycles are detected by static analysis at build time, and the message names the whole chain, trimmed to the cycle itself: `Cyclic dependency detected: Order -> Invoice -> Customer -> Order`.
 
-Cycles are detected by static analysis at build time, and the message names the whole chain — trimmed to the cycle itself, so a class that merely depends on a loop is not blamed for it:
+**Backwards compatible.** These previously raised bare `Exception`, and `RuntimeError` for the async-factory guard. Every class still derives from what it used to be, so existing `except Exception` and `except RuntimeError` handlers keep working. → [Errors](https://danleonard-nj.github.io/depi/concepts/errors/)
 
-```
-CircularDependencyError: Cyclic dependency detected: Order -> Invoice -> Customer -> Order
-```
+## Packages
 
-```python
-from depi import DepiError, RegistrationError, UnregisteredDependencyError
+This repository is a monorepo. Each package is its own distribution with its own release cadence, so a framework changing under an adapter never forces a core release — and never drags a web framework into an application that only wanted the container.
 
-try:
-    provider = services.build_provider()
-except RegistrationError as exc:
-    # Wiring is wrong -- fail startup loudly rather than serving traffic.
-    raise SystemExit(f'container misconfigured: {exc}')
-```
+| Package          | Import         | Depends on          |
+| ---------------- | -------------- | ------------------- |
+| `pydepi`         | `depi`         | *nothing*           |
+| `pydepi-flask`   | `depi_flask`   | `pydepi`, `flask`   |
+| `pydepi-quart`   | `depi_quart`   | `pydepi`, `quart`   |
+| `pydepi-fastapi` | `depi_fastapi` | `pydepi`, `fastapi` |
+| `pydepi-django`  | `depi_django`  | `pydepi`, `django`  |
 
-**Backwards compatible.** These previously raised bare `Exception`, and `RuntimeError` for the async-factory guard. Every class still derives from what it used to be, so existing `except Exception` and `except RuntimeError` handlers keep working — `AsyncFactoryError` and `NoActiveScopeError` both still subclass `RuntimeError`.
+Extras work as an alias — `pydepi[flask]`, `[quart]`, `[fastapi]`, `[django]`, `[all]` — but the distribution name is the more accurate form, since these are separate packages with their own versions rather than optional features of core.
 
-## Performance
+## Documentation
 
-### What is being compared
+- [Getting started](https://danleonard-nj.github.io/depi/getting-started/) — install, register, build, resolve.
+- [Tutorial](https://danleonard-nj.github.io/depi/tutorial/) — build and serve a small application, end to end.
+- [Concepts](https://danleonard-nj.github.io/depi/concepts/) — lifetimes, factories, async, disposal, graph validation, errors.
+- [Guides](https://danleonard-nj.github.io/depi/guides/) — testing, typed configuration, third-party clients, organizing a large container.
+- [Integrations](https://danleonard-nj.github.io/depi/integrations/) — Flask, Quart, FastAPI, Django.
+- [Architecture](https://danleonard-nj.github.io/depi/architecture/) — keeping the container at the composition boundary.
+- [Comparison](https://danleonard-nj.github.io/depi/comparison/) — against manual wiring, Dependency Injector, Injector, Punq, and FastAPI `Depends`.
+- [API reference](https://danleonard-nj.github.io/depi/api/) — generated signatures for the public API.
 
-`dependency-injector` is a **Cython extension** — its `providers`, `containers` and `_cwiring` modules ship as compiled binaries, so its resolution runs as native code. `depi` is pure Python, and every figure below is interpreted bytecode measured against compiled C.
-
-That is the honest way to read the gap: roughly 2.5x the cost of a C extension, while remaining installable anywhere CPython runs — one `py3-none-any` wheel, no compiler, no build step, nothing to rebuild for a new platform or interpreter.
-
-Measured with `pytest-benchmark` on a 12th Gen Intel i7-12800H, Python 3.11.5, against `dependency-injector` 4.48.1:
-
-| Metric                  | `depi` | `dependency-injector` | Ratio             |
-| ----------------------- | ------ | --------------------- | ----------------- |
-| Simple resolution (ns)  | 308.4  | 121.9                 | 2.5x slower       |
-| Complex resolution (ns) | 284.0  | 117.5                 | 2.4x slower       |
-| Container setup (µs)    | 30.0   | 149.4                 | **5.0x faster**   |
-| Memory allocation (µs)  | 18.4   | 9.2                   | 2.0x slower       |
-
-![depi vs dependency-injector benchmarks](tests/benchmarks.png)
-
-**Read the ratios, not the absolute figures.** Repeat runs on the same machine have differed by 8–54% depending on what else was running, while the ratios above held within a few percent across runs. Anyone reproducing these on their own hardware should expect different nanosecond counts and similar proportions.
-
-**What the trade buys**: roughly 2.5x the per-resolution cost of a compiled C extension, in exchange for pure-Python portability and resolving dependency graphs from type annotations with no wiring configuration. Setup is ~5x faster, which favours workloads that build containers often — test suites especially. Resolution cost stays flat as graphs deepen: the complex-graph figure is no worse than the simple one.
-
-Reproduce:
-
-```bash
-pytest tests/benchmarks --benchmark-enable --benchmark-warmup=on --benchmark-json=tests/benchmark_results.json
-```
-
-```bash
-python tests/plot_benchmarks.py tests/benchmark_results.json
-```
-
-Signature inspection for autowired views happens once at decoration time, not per request.
-
-## Thread Safety
-
-Singleton resolution is thread-safe; the provider uses an `RLock` so a singleton constructor can resolve further singletons without deadlocking. Coroutine-safe lazy singleton creation uses a per-type `asyncio.Lock`. Scoped instances are isolated per scope, and the ambient scope is a `ContextVar`, so it is isolated per thread and per task.
+Documentation source lives under [`docs/`](docs/) and is built with MkDocs.
 
 ## Development
 
@@ -500,7 +207,7 @@ tests/
   core/  integrations/  benchmarks/
 ```
 
-Adapters build against `depi.integration.BaseInjector` and `depi.context`, and pin `pydepi>=0.1,<0.2`.
+Tests for every package live together under `tests/`, so an adapter breaking against a new framework release is caught immediately — but they run as separate CI jobs, so a broken adapter cannot turn the core suite red. Adapters build against `depi.integration.BaseInjector` and `depi.context`, and pin `pydepi>=0.1,<0.2`.
 
 ## Roadmap
 
@@ -509,13 +216,9 @@ Adapters build against `depi.integration.BaseInjector` and `depi.context`, and p
 - **Frameworks**: aiohttp integration
 - **Tooling**: debug visualizations and dependency graph analysis
 
-## Changelog
-
-Per-package release notes are in [CHANGELOG.md](CHANGELOG.md); release mechanics are in [RELEASING.md](RELEASING.md). Known gaps and outstanding work are tracked in [BACKLOG.md](BACKLOG.md).
-
 ## Contributing
 
-Issues and contributions welcome on [GitHub](https://github.com/danleonard-nj/depi). The project follows semantic versioning and maintains backward compatibility within major versions.
+Issues and contributions welcome on [GitHub](https://github.com/danleonard-nj/depi). Per-package release notes are in [CHANGELOG.md](CHANGELOG.md), release mechanics in [RELEASING.md](RELEASING.md), and known gaps in [BACKLOG.md](BACKLOG.md). The project follows semantic versioning and maintains backward compatibility within major versions.
 
 ## License
 

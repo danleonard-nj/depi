@@ -4,118 +4,80 @@
 
 # depi
 
-`depi` is a dependency injection container for Python. It reads constructor type
-annotations and builds the object graph they describe.
-
-```python
-from depi import ServiceCollection
-
-class Config:
-    def __init__(self):
-        self.dsn = "postgres://localhost/app"
-
-class Database:
-    def __init__(self, config: Config):     # resolved from the annotation
-        self.dsn = config.dsn
-
-class UserService:
-    def __init__(self, db: Database):
-        self.db = db
-
-services = ServiceCollection()
-services.add_singleton(Config)
-services.add_scoped(Database)
-services.add_transient(UserService)
-
-provider = services.build_provider()
-user_service = provider.resolve(UserService)
-```
+`depi` is a dependency injection container for Python applications whose object
+graphs have outgrown manual wiring. Constructor annotations describe
+dependencies; ordinary Python registrations choose implementations and
+lifetimes.
 
 ```bash
 pip install pydepi
 ```
 
-The core package has no dependencies. Framework support ships separately
-(`pydepi-flask`, `pydepi-quart`, `pydepi-fastapi`, `pydepi-django`), so
-installing the container never pulls in a web framework.
+```python
+from depi import ServiceCollection
 
-## The problem it solves
+class Config:
+    database_url = "sqlite:///app.db"
 
-In an application with more than a handful of collaborating objects, the code
-that constructs them — "which concrete class, built with which arguments, shared
-or not" — tends to spread. It ends up inline in request handlers, in module-level
-globals, in test fixtures that each rebuild a slightly different graph. Changing
-one constructor means editing every call site.
+class Repository:
+    def __init__(self, config: Config):
+        self.database_url = config.database_url
 
-A container centralises that wiring. You describe each type once; the container
-works out construction order from the annotations and hands back finished
-objects.
+class UserService:
+    def __init__(self, repository: Repository):
+        self.repository = repository
 
-## The central idea
+services = ServiceCollection()
+services.add_singleton(Config)
+services.add_scoped(Repository)
+services.add_transient(UserService)
+provider = services.build_provider()
 
-> Dependency injection without letting the container become the application
-> architecture.
+with provider.create_scope() as scope:
+    users = scope.resolve(UserService)
+```
 
-A container earns its place by removing wiring code. It starts to cost you when
-application classes import it, when domain logic calls `resolve()`, when
-business rules only run if a scope is active — at that point the DI framework
-*is* your architecture, and the code cannot be read, tested, or reused without
-it.
+The core is pure Python and has no third-party runtime dependencies. Framework
+adapters are separate packages for Flask, Quart, FastAPI, and Django.
 
-`depi` is built to stay at the edge:
+## What it handles
 
-- Application and domain classes take their dependencies as constructor
-  parameters and never import `depi`.
-- Registration happens in one place — a [composition root](concepts/registration.md#the-composition-root)
-  — that the rest of the code does not import.
-- The only code that holds a `ServiceProvider` is the composition root and the
-  thin framework adapter at the HTTP boundary.
+- **Nontrivial graphs:** deterministic dependency ordering, cycle detection,
+  missing-registration checks, and lifetime validation.
+- **Object lifetimes:** singleton, scoped, and transient registrations;
+  factories; eager or lazy singleton construction; and scoped cleanup.
+- **Async construction and teardown:** async factories, `resolve_async`, nested
+  sync/async graphs, concurrency-safe singleton creation, and awaited scoped
+  cleanup.
+- **Python-native wiring:** annotations drive discovery, while registrations and
+  environment choices remain ordinary Python. There is no separate configuration
+  language or generated binding layer.
+- **Request scopes:** first-party adapters connect the same core container to
+  supported web frameworks without making the framework a core dependency.
 
-The [Architecture](architecture/index.md) chapter shows this in a complete
-example, and marks the exact line where `depi` stops being imported.
+The design evolved from application infrastructure used since 2020; its
+predecessor has wired a production service with more than 120 registrations
+since 2022. See [About](about/index.md) for provenance and
+[Limitations](about/limitations.md) for the current boundaries.
 
-## Who it is for
+## Keep the container at the boundary
 
-- Applications with enough services that manual construction has become
-  repetitive or error-prone.
-- Codebases that want constructor injection and a single composition root
-  without adopting a framework-specific DI system.
-- Teams coming from .NET's `Microsoft.Extensions.DependencyInjection`: the
-  `ServiceCollection` / `ServiceProvider` split and the singleton / scoped /
-  transient lifetimes are the same model.
+Registration belongs in a composition module. Services receive normal
+constructor arguments; they do not call `resolve()` or import `depi`. An entry
+point or framework adapter resolves a service or handler, then application code
+runs without container awareness. This works with a simple
+data/core → services → presentation layout, a different layering scheme, or no
+formal layers at all.
 
-## When you do not need it
+Read [Architecture](architecture/index.md) for a complete example.
 
-- A script or library with a few objects. Passing arguments to constructors by
-  hand is shorter and has no moving parts. See the
-  [comparison with manual wiring](comparison/index.md#manual-constructor-wiring).
-- An application already committed to a framework whose native DI (FastAPI's
-  `Depends`, for instance) covers what you need.
-- Code where the object graph is genuinely flat — a container adds indirection
-  without removing any.
+## Start here
 
-## Where to go next
-
-- **[Getting started](getting-started.md)** — installation to a working example.
-- **[Tutorial](tutorial/index.md)** — build a small app (a URL shortener) across
-  the layers, wire it, serve it, test it.
-- **[Concepts](concepts/index.md)** — registration, resolution, lifetimes,
-  scopes, factories, async, disposal, errors.
-- **[Architecture](architecture/index.md)** — the clean-architecture example and
-  what "the container becoming the architecture" means.
-- **[Integrations](integrations/index.md)** — Flask, Quart, FastAPI, Django.
-- **[API reference](api/index.md)** — generated from the source.
-- **[Comparison](comparison/index.md)** — manual wiring, service locator,
-  Dependency Injector, Injector, Punq.
-- **[Limitations and non-goals](about/limitations.md)** — what it does not do,
-  and its current maturity.
-
-## Status
-
-`pydepi` is at version 0.1.0 and its distribution metadata marks it Beta. The
-container has been developed since 2020 and a
-[predecessor of the same design](https://github.com/danleonard-nj/framework/tree/main/framework/di)
-has run in a production service since 2022. All five distributions
-(`pydepi` and the four framework adapters) are published on PyPI and CI runs
-green across the supported Python matrix — see
-[Limitations](about/limitations.md#maturity) for the remaining rough edges.
+- [Getting started](getting-started.md) — install, register, build, and resolve.
+- [Tutorial](tutorial/index.md) — build and serve a small application.
+- [Concepts](concepts/index.md) — lifetimes, factories, async, disposal, and graph
+  validation.
+- [Integrations](integrations/index.md) — Flask, Quart, FastAPI, and Django.
+- [API reference](api/index.md) — generated signatures and public API details.
+- [Comparison](comparison/index.md) — tradeoffs against manual wiring and other
+  DI approaches.

@@ -8,7 +8,7 @@ been sent rather than after the handler returns.
 
 Injection is via ``Depends``. FastAPI derives request parsing and the OpenAPI
 schema from the endpoint signature, so depi does not touch signatures here --
-see :meth:`FastAPIInjector.inject`.
+see ``FastAPIInjector.inject``.
 """
 
 from typing import TYPE_CHECKING

@@ -23,4 +23,4 @@ pip install pydepi[quart]
 from depi_quart import QuartInjector
 ```
 
-See the [main README](https://github.com/danleonard-nj/depi#framework-integrations) for the full integration guide.
+See the [Quart integration guide](https://danleonard-nj.github.io/depi/integrations/quart/) for the full walkthrough.

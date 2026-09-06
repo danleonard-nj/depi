@@ -15,6 +15,7 @@ pytest>=7.4
 pytest-asyncio>=0.23
 pytest-benchmark>=4.0
 httpx>=0.27              # required by fastapi.testclient
+aiohttp>=3.8             # exercised by tests/core/test_aiohttp_session.py
 ruff>=0.1
 
 # benchmark comparison target, and chart rendering for tests/plot_benchmarks.py
