@@ -23,4 +23,4 @@ pip install pydepi[flask]
 from depi_flask import FlaskInjector
 ```
 
-See the [main README](https://github.com/danleonard-nj/depi#framework-integrations) for the full integration guide.
+See the [Flask integration guide](https://danleonard-nj.github.io/depi/integrations/flask/) for the full walkthrough.

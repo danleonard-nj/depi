@@ -90,9 +90,9 @@ def load_config(_provider) -> AppConfig:
     return AppConfig(code_length=int(os.environ.get("SHORTLINK_CODE_LENGTH", "6")))
 ```
 
-Still no `depi` import — these are classes that take their own dependencies as
-constructor parameters (`SqlLikeLinkRepository` needs a `LinkStore`,
-`RandomCodeGenerator` needs an `AppConfig`).
+These classes take their own constructor dependencies:
+`SqlLikeLinkRepository` needs `LinkStore`, and `RandomCodeGenerator` needs
+`AppConfig`.
 
 `SqlLikeLinkRepository.dispose()` is the hook `depi` calls when a scope ends. It
 flushes buffered writes — the reason this repository is *scoped* rather than a
@@ -102,7 +102,8 @@ singleton.
 
 > File: `shortlinks/composition.py`
 
-This is the first and only module that imports `depi`.
+This composition module is where the tutorial imports `depi` and chooses the
+implementations and lifetimes.
 
 ```python
 # shortlinks/composition.py
@@ -208,9 +209,8 @@ created: q7f2ak -> https://peps.python.org/pep-0020/
 followed: q7f2ak -> https://peps.python.org/pep-0020/
 ```
 
-The link created in the first scope survives into the second because
-`dispose()` flushed it to the singleton `LinkStore`. Each scope got its own
-`SqlLikeLinkRepository`; both share the one `LinkStore`.
+The first scope flushes the link to the singleton `LinkStore`; the second scope
+gets a new `SqlLikeLinkRepository` backed by that same store.
 
 Resolving `CreateLink` straight from the provider — `provider.resolve(CreateLink)`
 with no scope — would raise [`ScopeRequiredError`][depi.ScopeRequiredError],

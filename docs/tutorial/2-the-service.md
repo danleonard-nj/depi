@@ -2,9 +2,8 @@
 
 > File: `shortlinks/service.py`
 
-The application layer holds the use cases. It imports the domain and nothing
-else. Each use case is a class that takes its dependencies as constructor
-parameters, typed as the domain interfaces from [step 1](1-the-domain.md).
+Each use case takes constructor dependencies typed with the interfaces from
+[step 1](1-the-domain.md).
 
 ```python
 # shortlinks/service.py
@@ -90,9 +89,8 @@ def test_unknown_code_raises():
         FollowLink(DictRepo())("missing")
 ```
 
-No `depi` here. That is the point of taking dependencies as constructor
-parameters — the use case is testable with three throwaway classes and no
-wiring.
+Constructor injection keeps the use case directly testable; no container is
+needed in this test.
 
 ## Checkpoint
 

@@ -113,6 +113,26 @@ def test_scope_is_disposed_after_the_response(app, provider):
     assert DISPOSED == [resolved]
 
 
+def test_async_cleanup_hooks_are_awaited_after_the_response(app, services):
+    cleaned = []
+
+    class AsyncResource:
+        async def __aexit__(self, exc_type, exc, tb):
+            cleaned.append('resource')
+
+    services.add_scoped(AsyncResource)
+    injector = FastAPIInjector(services.build_provider())
+    injector.setup(app)
+
+    @app.get('/async-resource')
+    async def async_resource(scope=Depends(injector.get_scope)):
+        scope.resolve(AsyncResource)
+        return {'ok': True}
+
+    assert TestClient(app).get('/async-resource').json() == {'ok': True}
+    assert cleaned == ['resource']
+
+
 def test_scope_is_disposed_even_when_the_endpoint_raises(app, provider):
     injector = FastAPIInjector(provider)
     injector.setup(app)

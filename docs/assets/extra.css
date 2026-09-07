@@ -16,3 +16,8 @@
   padding: 0.5rem 1.1rem;
   border-radius: 14px;
 }
+
+/* Use the full symbol name in API headings and navigation. */
+code.doc-symbol-method::after {
+  content: "method";
+}

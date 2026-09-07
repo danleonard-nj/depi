@@ -52,7 +52,7 @@ Install one by name — `pip install pydepi-flask`. The extra `pydepi[flask]` wo
 distribution name is the more accurate form: these are separate packages, versioned and released
 independently of core, not optional features of it.
 
-Full documentation, including the integration guide, factories, and the async API, is in the [project README](https://github.com/danleonard-nj/depi#readme).
+Full documentation — tutorial, concepts, guides, integrations, and API reference — is at [danleonard-nj.github.io/depi](https://danleonard-nj.github.io/depi/).
 
 ## License
 

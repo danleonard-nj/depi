@@ -11,7 +11,7 @@ step.
 coroutine forms of `resolve`. They:
 
 - await `async` factories,
-- await async constructor activation for the dependency chain,
+- walk constructor dependencies through the async resolution path,
 - otherwise behave exactly like `resolve` — same lifetimes, same caching.
 
 ```python
@@ -81,3 +81,15 @@ So a scoped service can hold an async resource and clean it up with an
 - Different singletons use different locks, so they can be built concurrently.
 - A singleton constructor may `await resolve_async(...)` for another singleton
   without deadlocking.
+
+DEPI does not automatically construct sibling dependencies in parallel; it
+resolves constructor parameters in order. Callers can use `asyncio.gather` for
+independent top-level resolutions, and the per-type locks allow those operations
+to overlap:
+
+```python
+cache, search = await asyncio.gather(
+    provider.resolve_async(CacheClient),
+    provider.resolve_async(SearchClient),
+)
+```

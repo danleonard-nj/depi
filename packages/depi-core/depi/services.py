@@ -707,7 +707,7 @@ class ServiceScope:
         Raises:
             UnregisteredDependencyError: ``_type`` has no registration.
             AsyncFactoryError: ``_type`` has an async factory; use
-                :meth:`resolve_async`.
+                ``resolve_async``.
         """
         provider = self._provider
         reg = provider._get_registered_dependency(_type)
@@ -747,7 +747,7 @@ class ServiceScope:
 
     async def resolve_async(self, _type: type) -> Any:
         """
-        Async variant of :meth:`resolve`.
+        Async variant of ``resolve``.
 
         Awaits async factories and async constructor dependencies. Scoped
         instances are cached for the life of the scope, so a repeated

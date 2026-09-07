@@ -1,7 +1,7 @@
 # Getting started
 
-This page goes from nothing to a working container. It assumes you know Python
-but not `depi`.
+This page goes from installation to a working container. It assumes Python but
+no prior `depi` knowledge.
 
 ## Install
 
@@ -9,10 +9,8 @@ but not `depi`.
 pip install pydepi
 ```
 
-That pulls in nothing else. If you are wiring a web application, install the
-adapter for your framework as well — `pip install pydepi-flask` (or `-quart`,
-`-fastapi`, `-django`). Those are covered in [Integrations](integrations/index.md);
-the rest of this page is plain Python.
+The core has no third-party runtime dependencies. Web adapters are covered in
+[Integrations](integrations/index.md); the rest of this page is plain Python.
 
 ## The smallest useful example
 
@@ -40,9 +38,8 @@ class Greeter:
         return self.formatter.format(name)
 ```
 
-`Formatter` needs a `Config`; `Greeter` needs a `Formatter`. The type
-annotations on the constructor parameters are what `depi` reads — there are no
-decorators or base classes involved.
+`depi` reads the constructor annotations: `Formatter` needs `Config`, and
+`Greeter` needs `Formatter`. No decorator or base class is involved.
 
 ## Register the dependencies
 
@@ -148,17 +145,6 @@ when the `with` block exits, any scoped instance that defines a `dispose()`
 method has it called. [`async with`](concepts/async.md) is also supported and
 awaits async cleanup.
 
-## What you now know
-
-- `ServiceCollection` collects registrations; `build_provider()` validates and
-  freezes them.
-- `add_singleton` / `add_transient` / `add_scoped` choose the lifetime.
-- Dependencies are read from constructor annotations — no unannotated
-  parameters.
-- `provider.resolve(T)` builds `T` and everything it needs.
-- Scoped services need a scope; the scope disposes them on exit.
-
-Next: the [Tutorial](tutorial/index.md) builds a small app with this, step by
-step. Or go to [Concepts](concepts/index.md) for the model in full, or
-[Architecture](architecture/index.md) for how to structure an application around
-this without the container leaking into it.
+Next, build a small app in the [Tutorial](tutorial/index.md), read the full
+behavioral model under [Concepts](concepts/index.md), or see where the container
+belongs in [Architecture](architecture/index.md).

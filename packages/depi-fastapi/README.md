@@ -23,4 +23,4 @@ pip install pydepi[fastapi]
 from depi_fastapi import FastAPIInjector
 ```
 
-See the [main README](https://github.com/danleonard-nj/depi#framework-integrations) for the full integration guide.
+See the [FastAPI integration guide](https://danleonard-nj.github.io/depi/integrations/fastapi/) for the full walkthrough.

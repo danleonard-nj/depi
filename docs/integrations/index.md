@@ -14,9 +14,6 @@ Each adapter depends on `pydepi` and its framework, and on nothing else.
 is the accurate form — these are separately versioned packages, not extras of
 core.
 
-There is no aiohttp adapter. It is [on the backlog](https://github.com/danleonard-nj/depi/blob/main/BACKLOG.md),
-not shipped.
-
 ## What every adapter does
 
 Three things, once per request:

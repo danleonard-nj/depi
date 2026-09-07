@@ -2,8 +2,8 @@
 
 > File: `shortlinks/domain.py`
 
-The domain layer is the entity and the interfaces the rest of the app depends
-on. It imports nothing — not `depi`, not a web framework, not a database driver.
+For this application, `domain.py` holds the entity and three small interfaces.
+This is the tutorial's chosen layout, not a structure required by `depi`.
 
 ```python
 # shortlinks/domain.py
@@ -47,9 +47,8 @@ class Clock(Protocol):
 - **`Clock`** — reading the current time is an external dependency like any
   other. Injecting it keeps the application deterministic under test.
 
-These `Protocol` classes are the application's own interfaces. `depi` will use
-them as registration keys in step 3, but they are not a `depi` concept — they
-are just types.
+These `Protocol` classes are application types. In step 3 they become
+registration keys, but `depi` does not require protocols.
 
 ## Checkpoint
 
