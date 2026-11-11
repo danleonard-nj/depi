@@ -10,6 +10,8 @@ Update the relevant section **before** tagging a release — the tag and the pac
 
 ### [Unreleased]
 
+### [0.1.1] — 2026-11-11
+
 #### Fixed
 
 - `add_singleton(T, instance=obj)` inspected `T`'s constructor as if `depi` were going to build it. That raised `MissingAnnotationError` at registration for an unannotated constructor or a `Protocol` key, and `UnregisteredDependencyError` or `InvalidLifetimeError` at `build_provider()` for the instance's own constructor dependencies. An instance registration now has no constructor parameters, the same as a factory registration.
