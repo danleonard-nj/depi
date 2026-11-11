@@ -668,6 +668,59 @@ class TestDependencyInjection(unittest.TestCase):
         self.assertIs(resolved, config)
         self.assertEqual(resolved.connection_string, "custom_connection")
 
+    def test_instance_registration_skips_constructor_annotations(self):
+        """An instance is already built, so an unannotated constructor is fine"""
+        class Untyped:
+            def __init__(self, host, port=5432):
+                self.host = host
+
+        instance = Untyped('localhost')
+        coll = ServiceCollection()
+        coll.add_singleton(Untyped, instance=instance)
+        prov = coll.build_provider()
+
+        self.assertEqual(coll.get_container()[Untyped].constructor_params, [])
+        self.assertIs(prov.resolve(Untyped), instance)
+
+    def test_instance_registration_skips_unregistered_dependencies(self):
+        """An instance's constructor dependencies do not need registrations"""
+        instance = EmailService(Configuration())
+        coll = ServiceCollection()
+        coll.add_singleton(EmailService, instance=instance)
+        prov = coll.build_provider()
+
+        self.assertIs(prov.resolve(EmailService), instance)
+
+    def test_instance_registration_skips_lifetime_validation(self):
+        """An instance built from a transient is not a singleton-on-transient error"""
+        instance = EmailService(Configuration())
+        coll = ServiceCollection()
+        coll.add_transient(Configuration)
+        coll.add_singleton(EmailService, instance=instance)
+        prov = coll.build_provider()
+
+        self.assertIs(prov.resolve(EmailService), instance)
+
+    def test_instance_registration_against_protocol(self):
+        """A Protocol key has no inspectable constructor; an instance needs none"""
+        from typing import Protocol
+
+        class Clock(Protocol):
+            def now(self) -> str: ...
+
+        class FixedClock:
+            def now(self) -> str:
+                return 'now'
+
+        instance = FixedClock()
+        coll = ServiceCollection()
+        coll.add_singleton(Clock, instance=instance)
+        prov = coll.build_provider()
+
+        self.assertIs(prov.resolve(Clock), instance)
+        with prov.create_scope() as scope:
+            self.assertIs(scope.resolve(Clock), instance)
+
     # NEW TESTS START HERE
 
     def test_singleton_initialization_order(self):

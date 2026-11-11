@@ -77,7 +77,7 @@ from unittest.mock import Mock
 repo = Mock(spec=UserRepository)
 repo.by_email.return_value = None
 
-services.add_scoped(UserRepository, instance=repo)
+services.add_singleton(UserRepository, instance=repo)
 ```
 
 Register it as an instance, not a factory, so the same mock object is the one
