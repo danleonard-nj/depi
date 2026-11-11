@@ -260,9 +260,15 @@ class ServiceCollection:
         """
         impl = implementation_type or dependency_type
 
+        # A factory or a pre-built instance is never constructed by depi, so its
+        # constructor is not inspected and its parameters are not dependencies.
+        needs_construction = (
+            kwargs.get('factory') is None
+            and kwargs.get('instance') is None
+        )
         constructor_params = (
             self.get_type_dependencies(impl)
-            if kwargs.get('factory') is None else []
+            if needs_construction else []
         )
 
         def resolver_fn(provider, *_):

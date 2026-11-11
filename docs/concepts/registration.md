@@ -52,7 +52,12 @@ work; `depi` does not check that the implementation is a subclass.
 services.add_singleton(Config, instance=already_built_config)
 ```
 
-`resolve(Config)` returns that exact object. Only meaningful for singletons.
+`resolve(Config)` returns that exact object. `instance=` is a singleton-only
+argument; `add_scoped` and `add_transient` do not accept it.
+
+The object is already built, so `depi` never reads its constructor: parameters
+need no annotations, their types need no registrations, and the key can be a
+`Protocol` or ABC that could not be constructed at all.
 
 ### A factory
 
@@ -100,8 +105,8 @@ services.add_transient(Report)
 ```
 
 The check runs *at the `add_*` call*, because that is when `depi` inspects the
-signature. A factory registration skips the check — the factory constructs the
-object itself, so `depi` never reads its constructor.
+signature. A factory or `instance=` registration skips the check — `depi` does
+not construct the object, so it never reads its constructor.
 
 String annotations (`from __future__ import annotations`, or quoted forward
 references) are evaluated, so a class whose `__init__` annotations are strings
