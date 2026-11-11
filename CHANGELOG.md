@@ -8,7 +8,7 @@ Update the relevant section **before** tagging a release — the tag and the pac
 
 ## pydepi
 
-### [Unreleased]
+### [0.1.1] — 2026-11-11
 
 #### Fixed
 
