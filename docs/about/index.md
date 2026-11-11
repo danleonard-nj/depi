@@ -39,7 +39,8 @@ has run in a production service since 2022 with more than 120 registrations in
 one container. This repository separated that work into the dependency-free core
 and independently released framework adapters.
 
-The current packages are version 0.1.0 and marked Beta. That label should guide
-upgrade expectations even though the underlying design predates the packaging.
+The core is version 0.1.1 and the four adapters are version 0.1.0; all are
+marked Beta. That label should guide upgrade expectations even though the
+underlying design predates the packaging.
 Current behavioral boundaries are listed under [Limitations and
 non-goals](limitations.md).

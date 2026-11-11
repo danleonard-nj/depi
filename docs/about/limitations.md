@@ -99,11 +99,11 @@ not shipped.
 
 ## Maturity
 
-The core and four adapters are version 0.1.0 and marked Beta. The container
-design has been developed since 2020, with a same-design predecessor used in a
-production service since 2022. See [About](index.md#provenance-and-maturity) for
-the verified history; treat the current package version as the compatibility
-signal.
+The core is version 0.1.1 and the four adapters are version 0.1.0; all are
+marked Beta. The container design has been developed since 2020, with a
+same-design predecessor used in a production service since 2022. See
+[About](index.md#provenance-and-maturity) for the verified history; treat the
+current package version as the compatibility signal.
 
 ## Versioning
 
